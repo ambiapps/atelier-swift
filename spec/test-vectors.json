@@ -1,0 +1,208 @@
+{
+  "comment": "Canonical conformance vectors for docs/data-model.md. Every SDK and the web UI evaluator must pass all of these verbatim. stable_id values are post-normalization (already trimmed + lowercased). Extend this file in the same PR as any evaluator change.",
+  "schema_version": 1,
+
+  "bucketing": {
+    "comment": "bucket = big_endian_uint32(sha256(utf8(flag_key + ':' + stable_id))[0..3]) mod 100",
+    "vectors": [
+      { "flag_key": "new_paywall", "stable_id": "0b9e4c3a-1111-4222-8333-444455556666", "expected_bucket": 55 },
+      { "flag_key": "new_paywall", "stable_id": "user-123", "expected_bucket": 50 },
+      { "flag_key": "grocery_v2", "stable_id": "user-123", "expected_bucket": 25 },
+      { "flag_key": "grocery_v2", "stable_id": "0b9e4c3a-1111-4222-8333-444455556666", "expected_bucket": 88 },
+      { "flag_key": "import_multi_recipe", "stable_id": "anon-device-7f3d2b1c", "expected_bucket": 48 },
+      { "flag_key": "import_multi_recipe", "stable_id": "sofia@example.com", "expected_bucket": 69 }
+    ]
+  },
+
+  "email_hashing": {
+    "comment": "email_hash = lowercase_hex(sha256(utf8(lowercase(trim(email)))))",
+    "vectors": [
+      { "input": " Sofia@Example.COM ", "expected_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" },
+      { "input": "sofia@example.com", "expected_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" }
+    ]
+  },
+
+  "evaluation": {
+    "comment": "Each case: evaluate 'flag' against 'context' with compiled-in default 'code_default'. 'expected_on' is the required resolution.",
+    "cases": [
+      {
+        "name": "kill_switch_overrides_everything",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": false,
+          "rules": [ { "conditions": [ { "attribute": "user_id", "op": "eq", "value": "user-123" } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "user_id": "user-123" },
+        "code_default": true,
+        "expected_on": false
+      },
+      {
+        "name": "allowlist_rule_beats_zero_rollout",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true } ],
+          "default_rollout_percent": 0
+        },
+        "context": { "stable_id": "user-123", "email_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" },
+        "code_default": false,
+        "expected_on": true
+      },
+      {
+        "name": "first_matching_rule_wins",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "build", "op": "lt", "value": 9000 } ], "serve": false },
+            { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true }
+          ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "build": 8950, "email_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" },
+        "code_default": true,
+        "expected_on": false
+      },
+      {
+        "name": "conditions_within_rule_are_anded",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [
+                { "attribute": "platform", "op": "eq", "value": "ios" },
+                { "attribute": "build", "op": "gte", "value": 9000 }
+              ], "serve": true }
+          ],
+          "default_rollout_percent": 0
+        },
+        "context": { "stable_id": "user-123", "platform": "ios", "build": 8999 },
+        "code_default": false,
+        "expected_on": false
+      },
+      {
+        "name": "rollout_boundary_bucket_equal_percent_is_off",
+        "flag": { "key": "grocery_v2", "enabled": true, "rules": [], "default_rollout_percent": 25 },
+        "context": { "stable_id": "user-123" },
+        "code_default": false,
+        "expected_on": false,
+        "note": "bucket(grocery_v2, user-123) == 25; ON iff bucket < percent"
+      },
+      {
+        "name": "rollout_boundary_bucket_below_percent_is_on",
+        "flag": { "key": "grocery_v2", "enabled": true, "rules": [], "default_rollout_percent": 26 },
+        "context": { "stable_id": "user-123" },
+        "code_default": false,
+        "expected_on": true
+      },
+      {
+        "name": "semver_gte_multi_digit_component",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.9" } ], "serve": true } ],
+          "default_rollout_percent": 0
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.10.0" },
+        "code_default": false,
+        "expected_on": true,
+        "note": "numeric component comparison: 5.10.0 >= 5.9; string comparison would fail this"
+      },
+      {
+        "name": "semver_eq_pads_missing_components",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_eq", "value": "5.2" } ], "serve": true } ],
+          "default_rollout_percent": 0
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
+        "code_default": false,
+        "expected_on": true
+      },
+      {
+        "name": "absent_attribute_matches_no_condition_positive_op",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
+        "code_default": false,
+        "expected_on": true,
+        "note": "rule does not match (no email in context); falls through to 100% rollout"
+      },
+      {
+        "name": "absent_attribute_matches_no_condition_negative_op",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "not_in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": false } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
+        "code_default": false,
+        "expected_on": true,
+        "note": "absent attribute matches NO condition, including not_in/neq; rule skipped, 100% rollout applies"
+      },
+      {
+        "name": "unknown_op_resolves_to_code_default_true",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": false } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "build": 9042 },
+        "code_default": true,
+        "expected_on": true,
+        "note": "rule 4 fail-safe: whole flag -> code default, NOT skip-the-rule (which would give ON via rollout for the wrong reason) and NOT off"
+      },
+      {
+        "name": "unknown_op_resolves_to_code_default_false",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "build": 9042 },
+        "code_default": false,
+        "expected_on": false
+      },
+      {
+        "name": "unknown_attribute_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "subscription_tier", "op": "eq", "value": "pro" } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "code_default": false,
+        "expected_on": false
+      },
+      {
+        "name": "unparsable_semver_value_resolves_to_code_default",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.x" } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
+        "code_default": false,
+        "expected_on": false
+      },
+      {
+        "name": "flag_absent_from_config_resolves_to_code_default",
+        "flag": null,
+        "context": { "stable_id": "user-123" },
+        "code_default": true,
+        "expected_on": true
+      }
+    ]
+  }
+}
