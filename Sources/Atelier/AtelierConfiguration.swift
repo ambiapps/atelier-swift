@@ -47,6 +47,16 @@ public struct AtelierConfiguration: Sendable {
     }
 }
 
+/// Which APNs environment the current build's device tokens belong to
+/// (ADR 0010). `.automatic` assumes debug builds run against the APNs
+/// sandbox and release builds (TestFlight, App Store) against
+/// production; pass an explicit value if your build setup differs.
+public enum PushEnvironment: Sendable {
+    case automatic
+    case production
+    case sandbox
+}
+
 public struct FlagContext: Sendable {
     /// Account uid when signed in; nil when anonymous. Determines
     /// `stable_id` (falls back to a persisted per-install UUID).
