@@ -26,7 +26,7 @@ enum AtelierDirectory {
     /// The one address compiled into the SDK: a tiny JSON document on
     /// Atelier's own origin, published by the web deploy workflow,
     /// naming the current config backend.
-    static let url = URL(string: "https://ambiapps.github.io/atelier/api/v1/endpoint.json")!
+    static let url = URL(string: "https://atelier.ambi.se/api/v1/endpoint.json")!
 
     /// Strict decode; any error (or an unsupported newer version) means
     /// "no usable document" and the caller keeps its last-known endpoint.
