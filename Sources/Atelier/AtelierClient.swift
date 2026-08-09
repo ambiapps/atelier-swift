@@ -251,12 +251,72 @@ public actor AtelierClient {
         await performRefresh()
     }
 
-    private func performRefresh() async {
+    /// - Parameter revalidating: skip any locally cached HTTP response
+    ///   for the config object. Set for a poke-triggered refresh, whose
+    ///   entire purpose is freshness — the object is served with a short
+    ///   `max-age`, and honoring it there would defeat the poke.
+    private func performRefresh(revalidating: Bool = false) async {
         await refreshEndpointFromDirectory()
         // Never resolved (first launch offline): compiled-in defaults
         // keep serving until a later refresh succeeds — never an error.
         guard let endpoint else { return }
 
+        // The CDN object is the normal read (ADR 0012); PostgREST is the
+        // fallback for a backend that advertises no `config_url` and for
+        // an object that is missing or unusable. `.unsupported` is not a
+        // fallback case: a document from the future must be ignored
+        // whole, not routed around.
+        switch await fetchPublishedConfig(endpoint: endpoint, revalidating: revalidating) {
+        case .document(let document):
+            apply(document)
+        case .unsupported:
+            break
+        case .unavailable:
+            await fetchConfigFromPostgREST(endpoint: endpoint)
+        }
+
+        // Piggyback the device registration on the refresh cycle so a
+        // token registered before the endpoint resolved still uploads.
+        await uploadRegistrationIfPending()
+    }
+
+    private func apply(_ document: ConfigDocument) {
+        cache.store(document)
+        shared.write { snapshot in
+            snapshot.flags = document.flagsByKey()
+        }
+    }
+
+    /// Reads `{config_url}/{organization}/{product}.json` — a static
+    /// object on a CDN. No key and no query string: it is public config,
+    /// the same bytes the fallback would assemble.
+    private func fetchPublishedConfig(
+        endpoint: AtelierEndpoint, revalidating: Bool
+    ) async -> ConfigDocument.Fetched {
+        guard
+            let url = endpoint.configObjectURL(
+                organization: configuration.organization,
+                product: configuration.product)
+        else { return .unavailable }
+
+        var request = URLRequest(url: url)
+        if revalidating {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        do {
+            let (data, response) = try await transport.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                (200..<300).contains(http.statusCode)
+            else { return .unavailable }
+            return ConfigDocument.decode(data, expecting: configuration.product)
+        } catch {
+            return .unavailable
+        }
+    }
+
+    /// The pre-ADR-0012 read path, kept as the fallback: bare rows,
+    /// wrapped into a document client-side.
+    private func fetchConfigFromPostgREST(endpoint: AtelierEndpoint) async {
         var components = URLComponents(
             url: endpoint.baseURL.appendingPathComponent("rest/v1/flags"),
             resolvingAgainstBaseURL: false)!
@@ -280,22 +340,15 @@ public actor AtelierClient {
             else { return }
             // Strict decode; any error keeps the previous cache.
             let rows = try JSONDecoder().decode([JSONValue].self, from: data)
-            let document = ConfigDocument(
-                schemaVersion: ConfigDocument.supportedSchemaVersion,
-                app: configuration.product,
-                flags: rows)
-            cache.store(document)
-            shared.write { snapshot in
-                snapshot.flags = document.flagsByKey()
-            }
+            apply(
+                ConfigDocument(
+                    schemaVersion: ConfigDocument.supportedSchemaVersion,
+                    app: configuration.product,
+                    flags: rows))
         } catch {
             // Fetch/parse failure: keep serving last-good. "Atelier is
             // down" must be indistinguishable from "nothing changed".
         }
-
-        // Piggyback the device registration on the refresh cycle so a
-        // token registered before the endpoint resolved still uploads.
-        await uploadRegistrationIfPending()
     }
 
     // MARK: - Push poke (ADR 0010)
@@ -339,11 +392,12 @@ public actor AtelierClient {
         return true
     }
 
-    /// A poke bypasses the refresh debounce: the push exists to say
-    /// something changed *right now*.
+    /// A poke bypasses the refresh debounce *and* the HTTP cache: the
+    /// push exists to say something changed right now, so serving a
+    /// cached config response would answer the wrong question.
     private func pokeRefresh() async {
         lastRefresh = now()
-        await performRefresh()
+        await performRefresh(revalidating: true)
     }
 
     private func uploadRegistrationIfPending() async {

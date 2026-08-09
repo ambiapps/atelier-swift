@@ -15,10 +15,29 @@ struct AtelierEndpoint: Codable, Equatable, Sendable {
     var baseURL: URL
     var apiKey: String
 
+    /// Where rendered config objects are served from (ADR 0012):
+    /// `{configURL}/{organization}/{product}.json` is a static object on
+    /// a CDN, and reading it is the normal path.
+    ///
+    /// Optional because the field is additive — a directory document
+    /// without it (an older backend, or one where CDN delivery is not
+    /// lit up yet) is not an error. It means "no CDN path advertised",
+    /// and the PostgREST read serves instead.
+    var configURL: URL?
+
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case baseURL = "base_url"
         case apiKey = "api_key"
+        case configURL = "config_url"
+    }
+
+    /// The object holding one product's config, or nil when the backend
+    /// advertises no CDN path.
+    func configObjectURL(organization: String, product: String) -> URL? {
+        configURL?
+            .appendingPathComponent(organization, isDirectory: true)
+            .appendingPathComponent("\(product).json")
     }
 }
 
