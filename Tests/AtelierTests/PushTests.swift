@@ -139,15 +139,32 @@ final class PushTests: XCTestCase {
         transport.setRegistrationFails(true)
         let clock = Clock()
         let client = makeClient(transport: transport, clock: clock)
+        // `init` kicks off a refresh nobody awaits, and every refresh
+        // piggybacks a pending registration. Let it finish first, and
+        // count attempts with `>=`: how many refresh cycles happen to
+        // overlap this test is timing, not behavior, and asserting an
+        // exact count makes the test fail on a loaded CI runner for a
+        // reason that has nothing to do with retrying.
+        await waitUntil { transport.flagsCallCount >= 1 }
+
         await client.registerDeviceToken(Data([0x02]), environment: .production)
-        await waitUntil { transport.registrationRequests.count == 1 }
+        await waitUntil { transport.registrationRequests.count >= 1 }
+        let attemptsBeforeRetry = transport.registrationRequests.count
 
         transport.setRegistrationFails(false)
         clock.advance(by: 61)
         await client.refresh()
         await waitUntil(
-            { transport.registrationRequests.count == 2 },
+            { transport.registrationRequests.count > attemptsBeforeRetry },
             message: "pending registration must ride the next refresh cycle")
+
+        // And once it lands it stops being pending: a further cycle
+        // uploads nothing, which is the half that makes the retry a
+        // retry rather than a repeat.
+        let attemptsAfterRetry = transport.registrationRequests.count
+        clock.advance(by: 61)
+        await client.refresh()
+        XCTAssertEqual(transport.registrationRequests.count, attemptsAfterRetry)
     }
 
     // MARK: - Poke handling
