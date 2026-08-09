@@ -1,14 +1,18 @@
 {
   "comment": "Canonical conformance vectors for docs/data-model.md. Every SDK and the web UI evaluator must pass all of these verbatim. stable_id values are post-normalization (already trimmed + lowercased). Extend this file in the same PR as any evaluator change.",
-  "schema_version": 1,
+  "schema_version": 2,
 
   "bucketing": {
-    "comment": "bucket = big_endian_uint32(sha256(utf8(flag_key + ':' + stable_id))[0..3]) mod 100",
+    "comment": "bucket = big_endian_uint32(sha256(utf8(flag_key + ':' + stable_id))[0..3]) mod 100. A rule's rollout gate passes iff bucket < rollout_percent.",
     "vectors": [
       { "flag_key": "new_paywall", "stable_id": "0b9e4c3a-1111-4222-8333-444455556666", "expected_bucket": 55 },
       { "flag_key": "new_paywall", "stable_id": "user-123", "expected_bucket": 50 },
       { "flag_key": "grocery_v2", "stable_id": "user-123", "expected_bucket": 25 },
+      { "flag_key": "grocery_v2", "stable_id": "user-c", "expected_bucket": 9 },
       { "flag_key": "grocery_v2", "stable_id": "0b9e4c3a-1111-4222-8333-444455556666", "expected_bucket": 88 },
+      { "flag_key": "import_batch_size", "stable_id": "user-123", "expected_bucket": 15 },
+      { "flag_key": "import_batch_size", "stable_id": "user-456", "expected_bucket": 1 },
+      { "flag_key": "import_batch_size", "stable_id": "user-a", "expected_bucket": 79 },
       { "flag_key": "import_multi_recipe", "stable_id": "anon-device-7f3d2b1c", "expected_bucket": 48 },
       { "flag_key": "import_multi_recipe", "stable_id": "sofia@example.com", "expected_bucket": 69 }
     ]
@@ -23,31 +27,94 @@
   },
 
   "evaluation": {
-    "comment": "Each case: evaluate 'flag' against 'context' with compiled-in default 'code_default'. 'expected_on' is the required resolution.",
+    "comment": "Each case: evaluate 'flag' against 'context' for a caller reading type 'read_as' with the compiled-in default 'code_default'; 'expected_value' is the required result. A flag is a list of overrides — the first rule whose conditions all match AND whose rollout gate passes serves its value, and every other outcome (flag absent, enabled false, no rule matched, anything unrecognized, a read of another type) is the code default. `isEnabled` is read_as 'bool'; there is no separate ON/OFF resolution.",
     "cases": [
       {
-        "name": "kill_switch_overrides_everything",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": false,
-          "rules": [ { "conditions": [ { "attribute": "user_id", "op": "eq", "value": "user-123" } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123", "user_id": "user-123" },
-        "code_default": true,
-        "expected_on": false
-      },
-      {
-        "name": "allowlist_rule_beats_zero_rollout",
+        "name": "rule_with_no_conditions_matches_everyone",
         "flag": {
           "key": "grocery_v2",
           "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true } ],
-          "default_rollout_percent": 0
+          "rules": [ { "conditions": [], "value": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true,
+        "note": "no conditions and no rollout_percent: everyone is overridden"
+      },
+      {
+        "name": "no_rules_leaves_the_code_default_alone",
+        "flag": { "key": "grocery_v2", "enabled": true, "rules": [] },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true,
+        "note": "a flag that overrides nobody is indistinguishable from no flag at all"
+      },
+      {
+        "name": "no_rule_matches_leaves_the_code_default_alone",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "platform", "op": "eq", "value": "macos" } ], "value": true } ]
+        },
+        "context": { "stable_id": "user-123", "platform": "ios" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false
+      },
+      {
+        "name": "master_switch_off_overrides_nobody_default_false",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": false,
+          "rules": [ { "conditions": [], "value": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false
+      },
+      {
+        "name": "master_switch_off_overrides_nobody_default_true",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": false,
+          "rules": [ { "conditions": [], "value": false } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true,
+        "note": "enabled:false is 'no opinion', NOT 'off for everyone' — the app keeps its own default, whatever it is"
+      },
+      {
+        "name": "conditionless_rule_forces_a_feature_off",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [], "value": false } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": false,
+        "note": "how a feature whose build defaults it on is turned off remotely"
+      },
+      {
+        "name": "allowlist_rule_beats_a_later_broad_rule",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "email_hash", "op": "eq", "value": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" } ], "value": true },
+            { "conditions": [], "value": false }
+          ]
         },
         "context": { "stable_id": "user-123", "email_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" },
+        "read_as": "bool",
         "code_default": false,
-        "expected_on": true
+        "expected_value": true
       },
       {
         "name": "first_matching_rule_wins",
@@ -55,14 +122,15 @@
           "key": "grocery_v2",
           "enabled": true,
           "rules": [
-            { "conditions": [ { "attribute": "build", "op": "lt", "value": 9000 } ], "serve": false },
-            { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true }
-          ],
-          "default_rollout_percent": 100
+            { "conditions": [ { "attribute": "build", "op": "lt", "value": 9000 } ], "value": false },
+            { "conditions": [ { "attribute": "email_hash", "op": "eq", "value": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" } ], "value": true }
+          ]
         },
         "context": { "stable_id": "user-123", "build": 8950, "email_hash": "9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c" },
+        "read_as": "bool",
         "code_default": true,
-        "expected_on": false
+        "expected_value": false,
+        "note": "exclusions before inclusions: the legacy-build rule is reached first and later rules are not evaluated"
       },
       {
         "name": "conditions_within_rule_are_anded",
@@ -73,268 +141,33 @@
             { "conditions": [
                 { "attribute": "platform", "op": "eq", "value": "ios" },
                 { "attribute": "build", "op": "gte", "value": 9000 }
-              ], "serve": true }
-          ],
-          "default_rollout_percent": 0
+              ], "value": true }
+          ]
         },
         "context": { "stable_id": "user-123", "platform": "ios", "build": 8999 },
+        "read_as": "bool",
         "code_default": false,
-        "expected_on": false
+        "expected_value": false
       },
       {
-        "name": "rollout_boundary_bucket_equal_percent_is_off",
-        "flag": { "key": "grocery_v2", "enabled": true, "rules": [], "default_rollout_percent": 25 },
-        "context": { "stable_id": "user-123" },
-        "code_default": false,
-        "expected_on": false,
-        "note": "bucket(grocery_v2, user-123) == 25; ON iff bucket < percent"
-      },
-      {
-        "name": "rollout_boundary_bucket_below_percent_is_on",
-        "flag": { "key": "grocery_v2", "enabled": true, "rules": [], "default_rollout_percent": 26 },
-        "context": { "stable_id": "user-123" },
-        "code_default": false,
-        "expected_on": true
-      },
-      {
-        "name": "semver_gte_multi_digit_component",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.9" } ], "serve": true } ],
-          "default_rollout_percent": 0
-        },
-        "context": { "stable_id": "user-123", "app_version": "5.10.0" },
-        "code_default": false,
-        "expected_on": true,
-        "note": "numeric component comparison: 5.10.0 >= 5.9; string comparison would fail this"
-      },
-      {
-        "name": "semver_eq_pads_missing_components",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_eq", "value": "5.2" } ], "serve": true } ],
-          "default_rollout_percent": 0
-        },
-        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
-        "code_default": false,
-        "expected_on": true
-      },
-      {
-        "name": "absent_attribute_matches_no_condition_positive_op",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
-        "code_default": false,
-        "expected_on": true,
-        "note": "rule does not match (no email in context); falls through to 100% rollout"
-      },
-      {
-        "name": "absent_attribute_matches_no_condition_negative_op",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "email_hash", "op": "not_in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "serve": false } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
-        "code_default": false,
-        "expected_on": true,
-        "note": "absent attribute matches NO condition, including not_in/neq; rule skipped, 100% rollout applies"
-      },
-      {
-        "name": "unknown_op_resolves_to_code_default_true",
+        "name": "rollout_boundary_bucket_equal_percent_does_not_match",
         "flag": {
           "key": "grocery_v2",
           "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": false } ],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "rollout_percent": 25, "value": true } ]
         },
-        "context": { "stable_id": "user-123", "build": 9042 },
-        "code_default": true,
-        "expected_on": true,
-        "note": "rule 4 fail-safe: whole flag -> code default, NOT skip-the-rule (which would give ON via rollout for the wrong reason) and NOT off"
-      },
-      {
-        "name": "unknown_op_resolves_to_code_default_false",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123", "build": 9042 },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
         "code_default": false,
-        "expected_on": false
+        "expected_value": false,
+        "note": "bucket(grocery_v2, user-123) == 25; the gate passes iff bucket < rollout_percent"
       },
       {
-        "name": "unknown_attribute_resolves_to_code_default",
+        "name": "rollout_boundary_bucket_below_percent_matches",
         "flag": {
           "key": "grocery_v2",
           "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "subscription_tier", "op": "eq", "value": "pro" } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "code_default": false,
-        "expected_on": false
-      },
-      {
-        "name": "unparsable_semver_value_resolves_to_code_default",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.x" } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
-        "code_default": false,
-        "expected_on": false
-      },
-      {
-        "name": "flag_absent_from_config_resolves_to_code_default",
-        "flag": null,
-        "context": { "stable_id": "user-123" },
-        "code_default": true,
-        "expected_on": true
-      },
-      {
-        "name": "boolean_read_ignores_value_type",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "code_default": false,
-        "expected_on": true,
-        "note": "isEnabled reports ON/OFF for a flag of any type — this is what builds shipped before typed values compute"
-      }
-    ]
-  },
-
-  "typed_values": {
-    "comment": "Value reads (`value(key, default:)`), which project the ON/OFF resolution onto the flag's declared value: ON -> on_value, OFF -> off_value. `read_as` is the type the calling code asked for and `code_default` is its compiled-in default; a read of the wrong type, an unknown value_type, or a value that does not match its declared type resolves to that default (rule 4). A flag with no value_type is a bool flag with on_value true / off_value false.",
-    "cases": [
-      {
-        "name": "int_flag_on_serves_on_value",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 50
-      },
-      {
-        "name": "int_flag_kill_switch_serves_off_value",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": false,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 10,
-        "note": "the kill switch serves off_value, not the code default: OFF is a decision, absence is the fail-safe"
-      },
-      {
-        "name": "int_flag_outside_rollout_serves_off_value",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 25
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 10,
-        "note": "bucket(grocery_v2, user-123) == 25; ON iff bucket < percent, so this user is OFF"
-      },
-      {
-        "name": "matching_rule_serving_false_gives_off_value",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [
-            { "conditions": [ { "attribute": "build", "op": "lt", "value": 9000 } ], "serve": false }
-          ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123", "build": 8950 },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 10
-      },
-      {
-        "name": "double_flag_serves_fractional_value",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "value_type": "double",
-          "on_value": 1.5,
-          "off_value": 0.75,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "double",
-        "code_default": 0.25,
-        "expected_value": 1.5
-      },
-      {
-        "name": "string_flag_serves_string_value",
-        "flag": {
-          "key": "new_paywall",
-          "enabled": true,
-          "value_type": "string",
-          "on_value": "annual_first",
-          "off_value": "monthly_first",
-          "rules": [],
-          "default_rollout_percent": 0
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "string",
-        "code_default": "control",
-        "expected_value": "monthly_first"
-      },
-      {
-        "name": "bool_flag_value_read_matches_resolution",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "bool",
-          "on_value": true,
-          "off_value": false,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "rollout_percent": 26, "value": true } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "bool",
@@ -342,26 +175,369 @@
         "expected_value": true
       },
       {
-        "name": "flag_without_value_type_reads_as_bool",
+        "name": "rollout_percent_zero_matches_nobody",
         "flag": {
           "key": "grocery_v2",
           "enabled": true,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "rollout_percent": 0, "value": true } ]
+        },
+        "context": { "stable_id": "user-c" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false,
+        "note": "bucket(grocery_v2, user-c) == 9, and 9 < 0 is false"
+      },
+      {
+        "name": "rollout_gate_is_anded_with_the_conditions",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "platform", "op": "eq", "value": "ios" } ], "rollout_percent": 26, "value": true } ]
+        },
+        "context": { "stable_id": "user-123", "platform": "macos" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false,
+        "note": "in the rollout, but the condition excludes them"
+      },
+      {
+        "name": "bucketed_out_rule_falls_through_to_a_later_rule",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [], "rollout_percent": 25, "value": true },
+            { "conditions": [], "value": false }
+          ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": false,
+        "note": "bucket 25 is outside the 25% gate, so the rule is skipped like any non-matching rule and the next one is tried"
+      },
+      {
+        "name": "semver_gte_multi_digit_component",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.9" } ], "value": true } ]
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.10.0" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true,
+        "note": "numeric component comparison: 5.10.0 >= 5.9; string comparison would fail this"
+      },
+      {
+        "name": "semver_eq_pads_missing_components",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_eq", "value": "5.2" } ], "value": true } ]
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true
+      },
+      {
+        "name": "absent_attribute_matches_no_condition_positive_op",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "email_hash", "op": "in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "value": true },
+            { "conditions": [], "value": false }
+          ]
+        },
+        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": false,
+        "note": "rule 1 does not match (no email in context); the conditionless rule below it does"
+      },
+      {
+        "name": "absent_attribute_matches_no_condition_negative_op",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "email_hash", "op": "not_in", "values": ["9c9a2b4703917f82fe0261e52f280a480f0f5ae44f4f00b1d22d2b46597f0e1c"] } ], "value": true },
+            { "conditions": [], "value": false }
+          ]
+        },
+        "context": { "stable_id": "anon-device-7f3d2b1c", "is_anonymous": true },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": false,
+        "note": "an absent attribute matches NO condition, including not_in/neq — that is ordinary non-matching, not rule 4"
+      },
+      {
+        "name": "unknown_op_resolves_to_code_default_true",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "value": false },
+            { "conditions": [], "value": false }
+          ]
+        },
+        "context": { "stable_id": "user-123", "build": 9042 },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true,
+        "note": "rule 4 fail-safe: the WHOLE flag falls back, not just the unparsable rule — skipping it would let the conditionless rule below apply to a user the unknown rule may have been excluding"
+      },
+      {
+        "name": "unknown_op_resolves_to_code_default_false",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [
+            { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "value": true },
+            { "conditions": [], "value": true }
+          ]
+        },
+        "context": { "stable_id": "user-123", "build": 9042 },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false
+      },
+      {
+        "name": "unknown_attribute_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "subscription_tier", "op": "eq", "value": "pro" } ], "value": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true
+      },
+      {
+        "name": "unparsable_semver_value_resolves_to_code_default",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "rules": [ { "conditions": [ { "attribute": "app_version", "op": "semver_gte", "value": "5.x" } ], "value": true } ]
+        },
+        "context": { "stable_id": "user-123", "app_version": "5.2.0" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true
+      },
+      {
+        "name": "unknown_rule_field_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [], "serve": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true,
+        "note": "a pre-ADR-0014 rule read by a current evaluator: unknown field and no value, so rule 4 — this is also why the document version went to 2"
+      },
+      {
+        "name": "rule_without_a_value_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [] } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "bool",
         "code_default": false,
-        "expected_value": true,
-        "note": "absent value fields mean bool/true/false, so every flag written before typed values existed is unchanged"
+        "expected_value": false
+      },
+      {
+        "name": "rollout_percent_out_of_range_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [], "rollout_percent": 250, "value": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false,
+        "note": "not clamped to 100 — an out-of-range percentage is a construct this evaluator does not recognize"
+      },
+      {
+        "name": "fractional_rollout_percent_resolves_to_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [], "rollout_percent": 12.5, "value": true } ]
+        },
+        "context": { "stable_id": "user-c" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false
+      },
+      {
+        "name": "flag_absent_from_config_resolves_to_code_default",
+        "flag": null,
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": true,
+        "expected_value": true
+      },
+      {
+        "name": "int_flag_rule_serves_its_value",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [ { "conditions": [], "value": 50 } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 50
+      },
+      {
+        "name": "int_flag_outside_the_rollout_keeps_the_code_default",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [ { "conditions": [], "rollout_percent": 10, "value": 50 } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 10,
+        "note": "bucket(import_batch_size, user-123) == 15; there is no configured 'off value' — the app's own 10 is it"
+      },
+      {
+        "name": "rules_serve_different_values_to_different_users_first_slice",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [
+            { "conditions": [], "rollout_percent": 10, "value": 100 },
+            { "conditions": [], "rollout_percent": 25, "value": 50 }
+          ]
+        },
+        "context": { "stable_id": "user-456" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 100,
+        "note": "bucket == 1, inside the first gate"
+      },
+      {
+        "name": "rules_serve_different_values_to_different_users_second_slice",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [
+            { "conditions": [], "rollout_percent": 10, "value": 100 },
+            { "conditions": [], "rollout_percent": 25, "value": 50 }
+          ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 50,
+        "note": "bucket == 15: outside the first gate, inside the second — a ladder of conditionless rules slices the audience because the bucket is per flag"
+      },
+      {
+        "name": "rules_serve_different_values_to_different_users_neither_slice",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [
+            { "conditions": [], "rollout_percent": 10, "value": 100 },
+            { "conditions": [], "rollout_percent": 25, "value": 50 }
+          ]
+        },
+        "context": { "stable_id": "user-a" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 10,
+        "note": "bucket == 79"
+      },
+      {
+        "name": "per_rule_values_by_condition",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [
+            { "conditions": [ { "attribute": "platform", "op": "eq", "value": "macos" } ], "value": 200 },
+            { "conditions": [ { "attribute": "platform", "op": "eq", "value": "ios" } ], "value": 50 }
+          ]
+        },
+        "context": { "stable_id": "user-123", "platform": "ios" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 50
+      },
+      {
+        "name": "double_flag_serves_fractional_value",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "double",
+          "rules": [ { "conditions": [], "value": 1.5 } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "double",
+        "code_default": 0.75,
+        "expected_value": 1.5
+      },
+      {
+        "name": "integral_value_in_double_flag_is_served",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "double",
+          "rules": [ { "conditions": [], "value": 2 } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "double",
+        "code_default": 0.75,
+        "expected_value": 2,
+        "note": "JSON cannot mark 2 as fractional, so a whole number is a legal double value"
+      },
+      {
+        "name": "string_flag_serves_string_value",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "value_type": "string",
+          "rules": [ { "conditions": [], "value": "annual_first" } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "string",
+        "code_default": "monthly_first",
+        "expected_value": "annual_first"
+      },
+      {
+        "name": "flag_without_value_type_reads_as_bool",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [ { "conditions": [], "value": true } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true
       },
       {
         "name": "flag_without_value_type_read_as_int_is_code_default",
         "flag": {
           "key": "grocery_v2",
           "enabled": true,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "value": true } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "int",
@@ -371,135 +547,86 @@
       {
         "name": "read_of_wrong_type_is_code_default",
         "flag": {
-          "key": "grocery_v2",
+          "key": "import_batch_size",
           "enabled": true,
           "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "value": 50 } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "double",
         "code_default": 0.5,
         "expected_value": 0.5,
-        "note": "reads are exact: no int -> double widening, no coercion"
+        "note": "reads are exact: a double read of an int flag does not widen"
       },
       {
-        "name": "mistyped_on_value_is_code_default",
+        "name": "int_flag_read_as_bool_is_code_default",
         "flag": {
-          "key": "grocery_v2",
+          "key": "import_batch_size",
           "enabled": true,
           "value_type": "int",
-          "on_value": "50",
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "value": 50 } ]
         },
         "context": { "stable_id": "user-123" },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 7
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false,
+        "note": "isEnabled is the bool read, and this flag is not a bool flag (ADR 0014)"
       },
       {
         "name": "fractional_value_in_int_flag_is_code_default",
         "flag": {
-          "key": "grocery_v2",
+          "key": "import_batch_size",
           "enabled": true,
           "value_type": "int",
-          "on_value": 50.5,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "value": 1.5 } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "int",
-        "code_default": 7,
-        "expected_value": 7
+        "code_default": 10,
+        "expected_value": 10
       },
       {
-        "name": "integral_value_in_double_flag_is_served",
+        "name": "mistyped_value_in_a_later_rule_fails_the_whole_flag",
         "flag": {
-          "key": "new_paywall",
+          "key": "import_batch_size",
           "enabled": true,
-          "value_type": "double",
-          "on_value": 2,
-          "off_value": 1,
-          "rules": [],
-          "default_rollout_percent": 100
+          "value_type": "int",
+          "rules": [
+            { "conditions": [], "value": 50 },
+            { "conditions": [ { "attribute": "platform", "op": "eq", "value": "macos" } ], "value": "fifty" }
+          ]
+        },
+        "context": { "stable_id": "user-123", "platform": "ios" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 10,
+        "note": "the recognition pass covers every rule before any of them is matched, so a rule the evaluator would never have reached still trips the fail-safe"
+      },
+      {
+        "name": "non_boolean_value_in_bool_flag_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "bool",
+          "rules": [ { "conditions": [], "value": 1 } ]
         },
         "context": { "stable_id": "user-123" },
-        "read_as": "double",
-        "code_default": 0.25,
-        "expected_value": 2,
-        "note": "JSON cannot mark 2.0 as fractional; a double flag accepts any number"
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false
       },
       {
         "name": "unknown_value_type_is_code_default",
         "flag": {
-          "key": "grocery_v2",
+          "key": "import_batch_size",
           "enabled": true,
-          "value_type": "json",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [],
-          "default_rollout_percent": 100
+          "value_type": "decimal",
+          "rules": [ { "conditions": [], "value": 50 } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "int",
-        "code_default": 7,
-        "expected_value": 7
-      },
-      {
-        "name": "non_canonical_bool_values_are_code_default",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "bool",
-          "on_value": 1,
-          "off_value": 0,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "bool",
-        "code_default": false,
-        "expected_value": false,
-        "note": "a bool flag's values are exactly true/false; anything else is an unrecognized construct"
-      },
-      {
-        "name": "unknown_op_makes_value_read_code_default",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "int",
-          "on_value": 50,
-          "off_value": 10,
-          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": true } ],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123", "build": 9042 },
-        "read_as": "int",
-        "code_default": 7,
-        "expected_value": 7,
-        "note": "rule 4 applies to value reads exactly as it does to boolean reads"
-      },
-      {
-        "name": "null_value_is_code_default",
-        "flag": {
-          "key": "grocery_v2",
-          "enabled": true,
-          "value_type": "bool",
-          "on_value": null,
-          "off_value": false,
-          "rules": [],
-          "default_rollout_percent": 100
-        },
-        "context": { "stable_id": "user-123" },
-        "read_as": "bool",
-        "code_default": false,
-        "expected_value": false,
-        "note": "absent means bool/true/false; present-but-null is an unrecognized construct, not an absent field — an implementation that defaults a null on_value to true would resolve ON and serve true here"
+        "code_default": 10,
+        "expected_value": 10
       },
       {
         "name": "null_value_type_is_code_default",
@@ -507,24 +634,39 @@
           "key": "grocery_v2",
           "enabled": true,
           "value_type": null,
-          "on_value": true,
-          "off_value": false,
-          "rules": [],
-          "default_rollout_percent": 100
+          "rules": [ { "conditions": [], "value": true } ]
         },
         "context": { "stable_id": "user-123" },
         "read_as": "bool",
         "code_default": false,
         "expected_value": false,
-        "note": "reading a null value_type as 'bool' would resolve ON and serve true, so this case fails an implementation that treats null as absent"
+        "note": "absent means bool; present-as-null is a construct the evaluator does not recognize"
       },
       {
-        "name": "absent_flag_is_code_default",
-        "flag": null,
+        "name": "null_rule_value_is_code_default",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": true,
+          "value_type": "int",
+          "rules": [ { "conditions": [], "value": null } ]
+        },
         "context": { "stable_id": "user-123" },
-        "read_as": "string",
-        "code_default": "control",
-        "expected_value": "control"
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 10
+      },
+      {
+        "name": "master_switch_off_on_a_typed_flag_keeps_the_code_default",
+        "flag": {
+          "key": "import_batch_size",
+          "enabled": false,
+          "value_type": "int",
+          "rules": [ { "conditions": [], "value": 50 } ]
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 10,
+        "expected_value": 10
       }
     ]
   }

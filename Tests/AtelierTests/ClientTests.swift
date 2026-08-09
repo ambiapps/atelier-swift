@@ -144,8 +144,10 @@ final class ClientTests: XCTestCase {
 
     private static let sampleRows = """
         [
-          {"key": "on_for_all", "enabled": true, "rules": [], "default_rollout_percent": 100},
-          {"key": "off_flag", "enabled": false, "rules": [], "default_rollout_percent": 100}
+          {"key": "on_for_all", "enabled": true,
+           "rules": [{"conditions": [], "value": true}]},
+          {"key": "paused_flag", "enabled": false,
+           "rules": [{"conditions": [], "value": true}]}
         ]
         """
 
@@ -169,11 +171,13 @@ final class ClientTests: XCTestCase {
         let cache = makeCache()
         cache.store(
             ConfigDocument(
-                schemaVersion: 1, app: "ambre",
+                schemaVersion: ConfigDocument.supportedSchemaVersion, app: "ambre",
                 flags: [
                     .object([
                         "key": .string("cached_flag"), "enabled": .bool(true),
-                        "rules": .array([]), "default_rollout_percent": .int(100),
+                        "rules": .array([
+                            .object(["conditions": .array([]), "value": .bool(true)])
+                        ]),
                     ])
                 ]))
         // Transport fails: launch must still see last-good immediately.
@@ -197,14 +201,31 @@ final class ClientTests: XCTestCase {
         let cache = makeCache()
         cache.store(
             ConfigDocument(
-                schemaVersion: 2, app: "ambre",
+                schemaVersion: ConfigDocument.supportedSchemaVersion + 1, app: "ambre",
                 flags: [
                     .object([
                         "key": .string("future_flag"), "enabled": .bool(true),
-                        "rules": .array([]), "default_rollout_percent": .int(100),
+                        "rules": .array([]),
                     ])
                 ]))
         XCTAssertNil(cache.load(), "schema_version above supported must be ignored entirely")
+    }
+
+    /// v1 restructured into v2 (ADR 0014), so an older document is not a
+    /// subset this build can read — it is a different shape, and reading
+    /// it would misrepresent what the server meant.
+    func testOlderCacheSchemaVersionIsIgnoredToo() {
+        let cache = makeCache()
+        cache.store(
+            ConfigDocument(
+                schemaVersion: 1, app: "ambre",
+                flags: [
+                    .object([
+                        "key": .string("legacy_flag"), "enabled": .bool(true),
+                        "rules": .array([]), "default_rollout_percent": .int(100),
+                    ])
+                ]))
+        XCTAssertNil(cache.load(), "a document of another version is ignored entirely")
     }
 
     func testRefreshReplacesCacheAtomicallyAndUpdatesValues() async {
@@ -213,7 +234,12 @@ final class ClientTests: XCTestCase {
         let client = makeClient(transport: transport, cache: cache)
 
         await waitUntil({ client.isEnabled("on_for_all", default: false) })
-        XCTAssertFalse(client.isEnabled("off_flag", default: true), "kill switch wins")
+        XCTAssertTrue(
+            client.isEnabled("paused_flag", default: true),
+            "a paused flag overrides nobody — the app keeps its own default")
+        XCTAssertFalse(
+            client.isEnabled("paused_flag", default: false),
+            "…whatever that default is")
 
         // Cache now holds the document; a fresh client cold-boots from it.
         let rebooted = makeClient(transport: StubTransport(error: StubError()), cache: cache)
@@ -236,35 +262,34 @@ final class ClientTests: XCTestCase {
 
     // MARK: - Typed values (ADR 0013)
 
-    /// A project's config as the CDN serves it, with one typed flag.
+    /// A project's config as the CDN serves it, with typed flags.
     private static let typedRows = """
         [
           {"key": "batch_size", "enabled": true, "value_type": "int",
-           "on_value": 50, "off_value": 10,
-           "rules": [], "default_rollout_percent": 100},
+           "rules": [{"conditions": [], "value": 50}]},
           {"key": "price_factor", "enabled": false, "value_type": "double",
-           "on_value": 1.5, "off_value": 0.75,
-           "rules": [], "default_rollout_percent": 100},
+           "rules": [{"conditions": [], "value": 1.5}]},
           {"key": "paywall_copy", "enabled": true, "value_type": "string",
-           "on_value": "annual_first", "off_value": "monthly_first",
-           "rules": [], "default_rollout_percent": 100},
-          {"key": "plain", "enabled": true, "rules": [], "default_rollout_percent": 100}
+           "rules": [{"conditions": [], "value": "annual_first"}]},
+          {"key": "plain", "enabled": true,
+           "rules": [{"conditions": [], "value": true}]}
         ]
         """
 
     private func makeTypedClient() async -> AtelierClient {
         let transport = StubTransport(flagsJSON: Self.typedRows)
         let client = makeClient(transport: transport, cache: makeCache())
-        await waitUntil({ client.isEnabled("batch_size", default: false) })
+        await waitUntil({ client.value("batch_size", default: 0) == 50 })
         return client
     }
 
-    func testTypedReadsServeTheFlagsValues() async {
+    func testTypedReadsServeTheMatchingRulesValue() async {
         let client = await makeTypedClient()
         XCTAssertEqual(client.value("batch_size", default: 7), 50)
         XCTAssertEqual(client.value("paywall_copy", default: "control"), "annual_first")
-        // The kill switch serves the off value, not the app's default.
-        XCTAssertEqual(client.value("price_factor", default: 0.25), 0.75)
+        // A paused flag overrides nobody: the app's own default stands,
+        // whatever the rules say (ADR 0014).
+        XCTAssertEqual(client.value("price_factor", default: 0.25), 0.25)
     }
 
     func testTypedReadOfAnotherTypeFallsBackToTheCompiledDefault() async {
@@ -282,13 +307,50 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(client.value("plain", default: 7), 7)
     }
 
-    /// The compatibility claim of ADR 0013: a build that predates typed
-    /// values reads a typed flag exactly as it always did — the
-    /// resolution, unaffected by the value fields it cannot see.
-    func testIsEnabledIgnoresValueTypeEntirely() async {
+    /// `isEnabled` is the bool read, nothing more (ADR 0014): on a flag
+    /// of another type it gives the caller's default, like every other
+    /// mismatched read.
+    func testIsEnabledIsTheBoolRead() async {
         let client = await makeTypedClient()
-        XCTAssertTrue(client.isEnabled("batch_size", default: false))
-        XCTAssertFalse(client.isEnabled("price_factor", default: true))
+        XCTAssertTrue(client.isEnabled("plain", default: false))
+        XCTAssertTrue(client.isEnabled("batch_size", default: true))
+        XCTAssertFalse(client.isEnabled("batch_size", default: false))
+    }
+
+    /// The headline of ADR 0014: two users, two rules, two values.
+    func testRulesServeDifferentValuesToDifferentUsers() async {
+        let rows = """
+            [
+              {"key": "import_batch_size", "enabled": true, "value_type": "int",
+               "rules": [{"conditions": [], "rollout_percent": 10, "value": 100},
+                         {"conditions": [], "rollout_percent": 25, "value": 50}]}
+            ]
+            """
+        let transport = StubTransport(flagsJSON: rows)
+        let client = makeClient(transport: transport, cache: makeCache())
+        // Wait on the fetch, not on a value: the anonymous stable id is a
+        // fresh UUID, so which slice it lands in is not ours to predict.
+        await waitUntil({ transport.flagsCallCount >= 1 })
+
+        func signIn(as userId: String) async {
+            await client.setContext(
+                FlagContext(
+                    userId: userId, build: 9042, appVersion: "5.2.0", platform: "ios",
+                    osVersion: "26.0", locale: "sv-se"))
+        }
+
+        // bucket(import_batch_size, user-456) == 1, inside the first gate.
+        await signIn(as: "user-456")
+        XCTAssertEqual(client.value("import_batch_size", default: 10), 100)
+
+        // bucket(…, user-123) == 15: past the first gate, inside the second.
+        await signIn(as: "user-123")
+        XCTAssertEqual(client.value("import_batch_size", default: 10), 50)
+
+        // bucket(…, user-a) == 79: no rule claims them, so the app keeps
+        // the value its own code compiled in.
+        await signIn(as: "user-a")
+        XCTAssertEqual(client.value("import_batch_size", default: 10), 10)
     }
 
     func testMissingTypedFlagUsesTheCompiledDefault() async {
@@ -296,25 +358,26 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(client.value("never_created", default: 7), 7)
     }
 
-    func testTypedReadFiresTheExposureHookWithTheResolution() async {
-        let exposures = ValuesBox<(String, Bool)>()
+    func testReadsFireTheExposureHookWithTheValueTheAppActsOn() async {
+        let exposures = ValuesBox<(String, JSONValue)>()
         var configuration = makeConfiguration()
-        configuration.onExposure = { key, isOn in exposures.append((key, isOn)) }
+        configuration.onExposure = { key, value in exposures.append((key, value)) }
         let client = AtelierClient(
             configuration: configuration,
             transport: StubTransport(flagsJSON: Self.typedRows),
             cacheOverride: makeCache(),
             now: { Date() },
             defaults: makeDefaults())
-        await waitUntil({ client.isEnabled("batch_size", default: false) })
+        await waitUntil({ client.value("batch_size", default: 7) == 50 })
 
         _ = client.value("batch_size", default: 7)
-        XCTAssertTrue(exposures.values.contains { $0.0 == "batch_size" && $0.1 })
+        XCTAssertTrue(exposures.values.contains { $0.0 == "batch_size" && $0.1 == .int(50) })
 
-        // A read that fell back reports nothing: there is no resolution
-        // to report, only the app's own default.
+        // A read nothing overrode still reports: the app acted on a
+        // value, and "who fell back?" is what a rollout dashboard asks.
         _ = client.value("never_created", default: 7)
-        XCTAssertFalse(exposures.values.contains { $0.0 == "never_created" })
+        XCTAssertTrue(
+            exposures.values.contains { $0.0 == "never_created" && $0.1 == .int(7) })
     }
 
     // MARK: - Endpoint discovery (ADR 0008)
@@ -457,8 +520,7 @@ final class ClientTests: XCTestCase {
             [
               {"key": "vip", "enabled": true,
                "rules": [{"conditions": [{"attribute": "user_id", "op": "eq",
-                          "value": "user-123"}], "serve": true}],
-               "default_rollout_percent": 0}
+                          "value": "user-123"}], "value": true}]}
             ]
             """
         let cache = makeCache()
@@ -469,7 +531,10 @@ final class ClientTests: XCTestCase {
                 build: 9000, appVersion: "5.2.0", platform: "iOS",
                 osVersion: "26.0", locale: "sv-SE"))
         await waitUntil({ transport.flagsCallCount >= 1 })
-        await waitUntil({ !client.isEnabled("vip", default: true) })
+        // Anonymous: no rule claims them, so the read is whatever the
+        // call site compiled in — both ways round (ADR 0014).
+        await waitUntil({ client.isEnabled("vip", default: true) })
+        XCTAssertFalse(client.isEnabled("vip", default: false))
 
         // Signing in as the targeted user flips the rule on. Note the SDK
         // normalization: uid is trimmed + lowercased.
@@ -538,8 +603,8 @@ final class ClientTests: XCTestCase {
         transport.set(
             flagsJSON: """
                 [
-                  {"key": "on_for_all", "enabled": false, "rules": [],
-                   "default_rollout_percent": 100}
+                  {"key": "on_for_all", "enabled": false,
+                   "rules": [{"conditions": [], "value": true}]}
                 ]
                 """)
         clock.advance(by: 3600)
@@ -588,10 +653,9 @@ final class ClientTests: XCTestCase {
         transport.set(
             flagsJSON: """
                 [
-                  {"key": "on_for_all", "enabled": true, "rules": [], "default_rollout_percent": 100},
-                  {"key": "off_flag", "enabled": false, "rules": [], "default_rollout_percent": 100},
-                  {"key": "unrelated_new_flag", "enabled": true, "rules": [],
-                   "default_rollout_percent": 100}
+                  {"key": "on_for_all", "enabled": true, "rules": [{"conditions": [], "value": true}]},
+                  {"key": "paused_flag", "enabled": false, "rules": [{"conditions": [], "value": true}]},
+                  {"key": "unrelated_new_flag", "enabled": true, "rules": [{"conditions": [], "value": true}]}
                 ]
                 """)
         clock.advance(by: 3600)
@@ -606,8 +670,7 @@ final class ClientTests: XCTestCase {
             [
               {"key": "vip", "enabled": true,
                "rules": [{"conditions": [{"attribute": "user_id", "op": "eq",
-                          "value": "user-123"}], "serve": true}],
-               "default_rollout_percent": 0}
+                          "value": "user-123"}], "value": true}]}
             ]
             """
         let cache = makeCache()
@@ -618,7 +681,7 @@ final class ClientTests: XCTestCase {
                 build: 9000, appVersion: "5.2.0", platform: "iOS",
                 osVersion: "26.0", locale: "sv-SE"))
         await waitUntil({ transport.flagsCallCount >= 1 })
-        await waitUntil({ !client.isEnabled("vip", default: true) })
+        await waitUntil({ !client.isEnabled("vip", default: false) })
 
         let values = ValuesBox<Bool>()
         let stream = client.observeIsEnabled("vip", default: false)

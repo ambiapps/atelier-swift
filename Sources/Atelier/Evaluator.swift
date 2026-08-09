@@ -29,76 +29,38 @@ enum Evaluator {
     /// compiled-in default (rule 4).
     struct UnknownConstruct: Error { let reason: String }
 
-    /// Evaluate one flag (as loose JSON, or nil when absent from the
-    /// config) against a normalized context. Boolean read: reports the
-    /// ON/OFF resolution for a flag of any value type.
-    static func resolve(
-        flag: JSONValue?, context: [String: JSONValue], stableID: String, codeDefault: Bool
-    ) -> Bool {
-        guard let flag else { return codeDefault }
-        do {
-            return try resolveStrict(
-                flag: flag, context: context, stableID: stableID)
-        } catch {
-            // Rule 4: anything unrecognized resolves the whole flag to the
-            // compiled-in default — never "skip the rule", never OFF.
-            return codeDefault
-        }
-    }
-
-    /// What a flag's ON and OFF are worth (ADR 0013).
+    /// What a flag may serve (ADR 0013); every rule's value matches it.
     enum ValueType: String {
         case bool, int, double, string
     }
 
-    /// Value read (ADR 0013): the ON/OFF resolution projected onto the
-    /// flag's declared value — ON serves `on_value`, OFF serves
-    /// `off_value` — along with the resolution it came from, for the
-    /// exposure hook.
+    /// Read a flag (as loose JSON, or nil when absent from the config)
+    /// for a caller reading `readAs`.
     ///
-    /// Returns nil where the caller must use its compiled-in default:
-    /// the flag is absent, `readAs` is not the type the flag declares
-    /// (reads are exact — no widening, no coercion), or anything rule 4
-    /// covers. A flag with no value fields is a bool flag serving
-    /// true/false, so config written before typed values existed reads
-    /// exactly as it always did.
+    /// Returns the value of the first rule that matches this context —
+    /// or nil, meaning **the caller must use the default it compiled in**
+    /// (ADR 0014). Nil covers every other outcome there is: the flag is
+    /// absent, `enabled` is false so it overrides nobody, no rule matched,
+    /// `readAs` is not the type the flag declares (reads are exact — no
+    /// widening, no coercion), or anything rule 4 covers. A flag with no
+    /// `value_type` is a bool flag.
     static func resolveValue(
         flag: JSONValue?, context: [String: JSONValue], stableID: String, readAs: ValueType
-    ) -> (value: JSONValue, isOn: Bool)? {
+    ) -> JSONValue? {
         guard let flag, let object = flag.objectValue else { return nil }
         do {
-            let values = try parseValues(object)
-            guard values.type == readAs else { return nil }
-            let isOn = try resolveStrict(flag: flag, context: context, stableID: stableID)
-            return (isOn ? values.onValue : values.offValue, isOn)
+            let declared = object["value_type"] ?? .string(ValueType.bool.rawValue)
+            guard let name = declared.stringValue, let type = ValueType(rawValue: name) else {
+                throw UnknownConstruct(reason: "unknown value_type")
+            }
+            guard type == readAs else { return nil }
+            return try resolveStrict(
+                flag: flag, context: context, stableID: stableID, type: type)
         } catch {
+            // Rule 4: anything unrecognized sends the whole flag to the
+            // caller's compiled-in default — never "skip the rule".
             return nil
         }
-    }
-
-    private struct Values {
-        var type: ValueType
-        var onValue: JSONValue
-        var offValue: JSONValue
-    }
-
-    private static func parseValues(_ object: [String: JSONValue]) throws -> Values {
-        let declared = object["value_type"] ?? .string(ValueType.bool.rawValue)
-        guard let name = declared.stringValue, let type = ValueType(rawValue: name) else {
-            throw UnknownConstruct(reason: "unknown value_type")
-        }
-        let onValue = object["on_value"] ?? .bool(true)
-        let offValue = object["off_value"] ?? .bool(false)
-        guard matches(value: onValue, type: type), matches(value: offValue, type: type) else {
-            throw UnknownConstruct(reason: "value does not match value_type")
-        }
-        // A bool flag's values are fixed. Anything else would let
-        // `isEnabled` (which reads the resolution) and a value read
-        // disagree about the same flag.
-        if type == .bool, onValue != .bool(true) || offValue != .bool(false) {
-            throw UnknownConstruct(reason: "a bool flag serves true when on, false when off")
-        }
-        return Values(type: type, onValue: onValue, offValue: offValue)
     }
 
     private static func matches(value: JSONValue, type: ValueType) -> Bool {
@@ -112,9 +74,10 @@ enum Evaluator {
         }
     }
 
+    /// Nil means "nothing overrode this user"; throwing means rule 4.
     private static func resolveStrict(
-        flag: JSONValue, context: [String: JSONValue], stableID: String
-    ) throws -> Bool {
+        flag: JSONValue, context: [String: JSONValue], stableID: String, type: ValueType
+    ) throws -> JSONValue? {
         guard let object = flag.objectValue else {
             throw UnknownConstruct(reason: "flag is not an object")
         }
@@ -124,42 +87,44 @@ enum Evaluator {
         guard let enabled = object["enabled"]?.boolValue else {
             throw UnknownConstruct(reason: "missing/mistyped enabled")
         }
+        // 1. Master switch — checked before rule validation on purpose:
+        // `enabled` is a recognized construct, and the one-click lever must
+        // work even on builds that can't parse some future rule shape
+        // elsewhere in the flag. It overrides nobody; it is not "off".
+        if !enabled { return nil }
+
         guard let rules = object["rules"]?.arrayValue else {
             throw UnknownConstruct(reason: "missing/mistyped rules")
         }
-        guard let percent = object["default_rollout_percent"]?.intValue,
-            (0...100).contains(percent)
-        else {
-            throw UnknownConstruct(reason: "missing/mistyped default_rollout_percent")
-        }
-        // 1. Kill switch — checked before rule validation on purpose:
-        // `enabled` is a recognized construct, and the one-click emergency
-        // lever must work even on builds that can't parse some future rule
-        // shape elsewhere in the flag.
-        if !enabled { return false }
 
         // Recognition pass BEFORE any matching: an unknown construct
-        // anywhere in the flag must resolve it to the code default even if
-        // an earlier rule would already have matched. Skipping validation
-        // of later rules could silently widen a restricted audience.
-        let parsedRules = try rules.map(parseRule)
+        // anywhere in the flag must send it to the code default even if an
+        // earlier rule would already have matched. Skipping validation of
+        // later rules could silently widen a restricted audience.
+        let parsedRules = try rules.map { try parseRule($0, type: type) }
 
-        // 2. Rules in order; first match wins.
+        // 2. Rules in order; first match wins. A rule matches when all its
+        // conditions match and its rollout gate lets this user through.
         for rule in parsedRules {
-            if rule.conditions.allSatisfy({ matches(condition: $0, context: context) }) {
-                return rule.serve
-            }
+            guard rule.conditions.allSatisfy({ matches(condition: $0, context: context) })
+            else { continue }
+            if let percent = rule.rolloutPercent,
+                bucket(flagKey: key, stableID: stableID) >= percent
+            { continue }
+            return rule.value
         }
 
-        // 3. Default rollout.
-        return bucket(flagKey: key, stableID: stableID) < percent
+        // 3. Nobody claimed this user: their app keeps its own default.
+        return nil
     }
 
     // MARK: - Rule parsing (strict)
 
     private struct Rule {
         var conditions: [Condition]
-        var serve: Bool
+        /// Nil means every user the conditions match.
+        var rolloutPercent: Int?
+        var value: JSONValue
     }
 
     private struct Condition {
@@ -194,20 +159,35 @@ enum Evaluator {
         }
     }
 
-    private static func parseRule(_ json: JSONValue) throws -> Rule {
+    private static func parseRule(_ json: JSONValue, type: ValueType) throws -> Rule {
         guard let object = json.objectValue else {
             throw UnknownConstruct(reason: "rule is not an object")
         }
-        guard Set(object.keys).isSubset(of: ["conditions", "serve"]) else {
+        guard Set(object.keys).isSubset(of: ["conditions", "rollout_percent", "value"]) else {
             throw UnknownConstruct(reason: "rule has unknown fields")
         }
-        guard let serve = object["serve"]?.boolValue else {
-            throw UnknownConstruct(reason: "missing/mistyped serve")
+        guard let value = object["value"] else {
+            throw UnknownConstruct(reason: "rule is missing a value")
+        }
+        guard matches(value: value, type: type) else {
+            throw UnknownConstruct(reason: "rule value does not match value_type")
         }
         guard let conditions = object["conditions"]?.arrayValue else {
             throw UnknownConstruct(reason: "missing/mistyped conditions")
         }
-        return Rule(conditions: try conditions.map(parseCondition), serve: serve)
+        // Absent is the common case and means "everyone the conditions
+        // matched". Present-but-unusable is rule 4, not a silent 100%.
+        var rolloutPercent: Int?
+        if let raw = object["rollout_percent"] {
+            guard let percent = raw.intValue, (0...100).contains(percent) else {
+                throw UnknownConstruct(reason: "mistyped rollout_percent")
+            }
+            rolloutPercent = percent
+        }
+        return Rule(
+            conditions: try conditions.map(parseCondition),
+            rolloutPercent: rolloutPercent,
+            value: value)
     }
 
     private static func parseCondition(_ json: JSONValue) throws -> Condition {

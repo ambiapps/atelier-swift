@@ -31,8 +31,9 @@ enum Flags {
 
     static var groceryV2: Bool { client.isEnabled("grocery_v2", default: false) }
 
-    // A flag can carry a typed value instead of a bare on/off: the same
-    // targeting decides on or off, and the flag says what each is worth.
+    // A flag can carry a typed value instead of a bare on/off: each
+    // targeting rule serves a value, and users no rule matches keep the
+    // default written right here.
     static var importBatchSize: Int { client.value("import_batch_size", default: 10) }
 }
 ```
@@ -43,11 +44,18 @@ to the compiled-in default. The default should equal current shipped
 behavior, so "Atelier unreachable" is indistinguishable from "nothing
 changed".
 
+**A flag is an override, not a source of truth.** The default you pass
+at the call site is what the code does unless a rule in the config
+claims this particular user — and it is also what you get when the flag
+is missing, when it is paused in the console, when the config carries
+something this build cannot parse, and when Atelier is unreachable.
+There is no configured "off value" anywhere.
+
 `value(_:default:)` reads `Bool`, `Int`, `Double` and `String`. Reads
 are exact: asking for a type the flag does not declare — including a
 `Double` from an integer flag — gives the compiled-in default, as does
-a flag that has been retyped since your build shipped. `isEnabled`
-works on a flag of any type and reports its on/off resolution.
+a flag that has been retyped since your build shipped. `isEnabled` is
+the `Bool` overload of the same read.
 
 On OSes with the Observation framework (iOS 17, macOS 14, …), a flag
 read inside a SwiftUI `body` subscribes the view — it re-renders when
@@ -149,6 +157,9 @@ under **Organizations**.
 4. **Fail-safe.** Unknown config constructs resolve the whole flag to
    its compiled-in default, so shipped builds stay correct as new
    targeting features are added server-side.
+5. **Nothing configured means nothing changes.** No rule matched, flag
+   paused, flag deleted, backend down — every one of them is the app
+   doing exactly what its own code says.
 
 ## Demo
 

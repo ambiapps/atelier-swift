@@ -8,10 +8,12 @@ import Foundation
 /// client-side constant `schema_version` (docs/supabase.md). The disk
 /// cache stores the same shape either way.
 struct ConfigDocument: Codable {
-    /// The document version this SDK understands. A document with a
-    /// higher version is ignored entirely and the cached last-supported
-    /// config is kept (data-model.md).
-    static let supportedSchemaVersion = 1
+    /// The document version this SDK implements. Any other version —
+    /// higher or lower — is ignored entirely and the cached
+    /// last-supported config is kept (data-model.md). Version 2
+    /// restructured the flag object (ADR 0014), so a v1 document is not
+    /// a subset this build could read: it is a different shape.
+    static let supportedSchemaVersion = 2
 
     var schemaVersion: Int
     var app: String
@@ -36,7 +38,7 @@ struct ConfigDocument: Codable {
     enum Fetched {
         /// Usable; replace the cache with it.
         case document(ConfigDocument)
-        /// Declares a `schema_version` this build does not understand.
+        /// Declares a `schema_version` this build does not implement.
         /// Ignore it *entirely* and keep the cached config — and do not
         /// try another read path either: a newer version can mean the
         /// row shape changed too, so rebuilding a document out of raw
@@ -54,7 +56,7 @@ struct ConfigDocument: Codable {
         guard let document = try? JSONDecoder().decode(ConfigDocument.self, from: data) else {
             return .unavailable
         }
-        guard document.schemaVersion <= supportedSchemaVersion else { return .unsupported }
+        guard document.schemaVersion == supportedSchemaVersion else { return .unsupported }
         guard document.app == product else { return .unavailable }
         return .document(document)
     }

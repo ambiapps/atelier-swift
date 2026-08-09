@@ -25,19 +25,10 @@ final class ConformanceTests: XCTestCase {
             }
             let vectors: [Vector]
         }
+        /// Every case is a read: `read_as` is the type the calling code
+        /// asked for and `code_default` its compiled-in default, which is
+        /// the expected value for every outcome but a matching rule.
         struct Evaluation: Decodable {
-            struct Case: Decodable {
-                let name: String
-                let flag: JSONValue?
-                let context: [String: JSONValue]
-                let code_default: Bool
-                let expected_on: Bool
-            }
-            let cases: [Case]
-        }
-        /// Value reads (ADR 0013): `read_as` is the type the calling code
-        /// asked for, `code_default` its compiled-in default.
-        struct TypedValues: Decodable {
             struct Case: Decodable {
                 let name: String
                 let flag: JSONValue?
@@ -51,7 +42,6 @@ final class ConformanceTests: XCTestCase {
         let bucketing: Bucketing
         let email_hashing: EmailHashing
         let evaluation: Evaluation
-        let typed_values: TypedValues
     }
 
     private static func loadVectors() throws -> Vectors {
@@ -93,24 +83,6 @@ final class ConformanceTests: XCTestCase {
                 XCTFail("\(testCase.name): vector context missing stable_id")
                 continue
             }
-            let flag: JSONValue? = testCase.flag.flatMap { $0 == .null ? nil : $0 }
-            let isOn = Evaluator.resolve(
-                flag: flag,
-                context: testCase.context,
-                stableID: stableID,
-                codeDefault: testCase.code_default)
-            XCTAssertEqual(isOn, testCase.expected_on, testCase.name)
-        }
-    }
-
-    func testTypedValueVectors() throws {
-        let cases = try Self.loadVectors().typed_values.cases
-        XCTAssertFalse(cases.isEmpty)
-        for testCase in cases {
-            guard let stableID = testCase.context["stable_id"]?.stringValue else {
-                XCTFail("\(testCase.name): vector context missing stable_id")
-                continue
-            }
             guard let readAs = Evaluator.ValueType(rawValue: testCase.read_as) else {
                 XCTFail("\(testCase.name): unknown read_as \(testCase.read_as)")
                 continue
@@ -138,7 +110,7 @@ final class ConformanceTests: XCTestCase {
                 continue
             }
             XCTAssertEqual(
-                scalar(resolved?.value ?? testCase.code_default), expected, testCase.name)
+                scalar(resolved ?? testCase.code_default), expected, testCase.name)
         }
     }
 }
