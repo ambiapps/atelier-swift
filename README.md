@@ -78,6 +78,26 @@ await Flags.client.setContext(
         locale: locale))
 ```
 
+## Manage flags from your coding agent
+
+Atelier's console speaks [MCP](https://modelcontextprotocol.io), so the
+agent you already code with can read your flags — what exists, what
+each one is set to, what it would resolve to for a given user — and
+create, target and ramp them, without you explaining your setup first:
+
+```sh
+claude mcp add --transport http atelier \
+  https://idsbxaiaunsbqegapzib.supabase.co/functions/v1/mcp
+```
+
+Adding it opens your browser to sign in and approve; there is no API
+key to copy anywhere. The agent then acts with your own access — the
+projects you can reach — and every change it makes is recorded in the
+audit log under your name.
+
+The same command, and the endpoint on its own, are shown in the console
+under **Organizations**.
+
 ## Design guarantees
 
 1. **Never blocks launch.** Initialization reads the disk cache and
