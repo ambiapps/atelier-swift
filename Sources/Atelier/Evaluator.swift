@@ -30,7 +30,8 @@ enum Evaluator {
     struct UnknownConstruct: Error { let reason: String }
 
     /// Evaluate one flag (as loose JSON, or nil when absent from the
-    /// config) against a normalized context.
+    /// config) against a normalized context. Boolean read: reports the
+    /// ON/OFF resolution for a flag of any value type.
     static func resolve(
         flag: JSONValue?, context: [String: JSONValue], stableID: String, codeDefault: Bool
     ) -> Bool {
@@ -42,6 +43,72 @@ enum Evaluator {
             // Rule 4: anything unrecognized resolves the whole flag to the
             // compiled-in default — never "skip the rule", never OFF.
             return codeDefault
+        }
+    }
+
+    /// What a flag's ON and OFF are worth (ADR 0013).
+    enum ValueType: String {
+        case bool, int, double, string
+    }
+
+    /// Value read (ADR 0013): the ON/OFF resolution projected onto the
+    /// flag's declared value — ON serves `on_value`, OFF serves
+    /// `off_value` — along with the resolution it came from, for the
+    /// exposure hook.
+    ///
+    /// Returns nil where the caller must use its compiled-in default:
+    /// the flag is absent, `readAs` is not the type the flag declares
+    /// (reads are exact — no widening, no coercion), or anything rule 4
+    /// covers. A flag with no value fields is a bool flag serving
+    /// true/false, so config written before typed values existed reads
+    /// exactly as it always did.
+    static func resolveValue(
+        flag: JSONValue?, context: [String: JSONValue], stableID: String, readAs: ValueType
+    ) -> (value: JSONValue, isOn: Bool)? {
+        guard let flag, let object = flag.objectValue else { return nil }
+        do {
+            let values = try parseValues(object)
+            guard values.type == readAs else { return nil }
+            let isOn = try resolveStrict(flag: flag, context: context, stableID: stableID)
+            return (isOn ? values.onValue : values.offValue, isOn)
+        } catch {
+            return nil
+        }
+    }
+
+    private struct Values {
+        var type: ValueType
+        var onValue: JSONValue
+        var offValue: JSONValue
+    }
+
+    private static func parseValues(_ object: [String: JSONValue]) throws -> Values {
+        let declared = object["value_type"] ?? .string(ValueType.bool.rawValue)
+        guard let name = declared.stringValue, let type = ValueType(rawValue: name) else {
+            throw UnknownConstruct(reason: "unknown value_type")
+        }
+        let onValue = object["on_value"] ?? .bool(true)
+        let offValue = object["off_value"] ?? .bool(false)
+        guard matches(value: onValue, type: type), matches(value: offValue, type: type) else {
+            throw UnknownConstruct(reason: "value does not match value_type")
+        }
+        // A bool flag's values are fixed. Anything else would let
+        // `isEnabled` (which reads the resolution) and a value read
+        // disagree about the same flag.
+        if type == .bool, onValue != .bool(true) || offValue != .bool(false) {
+            throw UnknownConstruct(reason: "a bool flag serves true when on, false when off")
+        }
+        return Values(type: type, onValue: onValue, offValue: offValue)
+    }
+
+    private static func matches(value: JSONValue, type: ValueType) -> Bool {
+        switch type {
+        case .bool: return value.boolValue != nil
+        case .int: return value.intValue != nil
+        // JSON has one number type and no way to mark 2.0 as fractional,
+        // so a double flag accepts a whole number too.
+        case .double: return value.doubleValue != nil
+        case .string: return value.stringValue != nil
         }
     }
 

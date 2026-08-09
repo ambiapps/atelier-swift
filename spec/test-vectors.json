@@ -202,6 +202,295 @@
         "context": { "stable_id": "user-123" },
         "code_default": true,
         "expected_on": true
+      },
+      {
+        "name": "boolean_read_ignores_value_type",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "code_default": false,
+        "expected_on": true,
+        "note": "isEnabled reports ON/OFF for a flag of any type — this is what builds shipped before typed values compute"
+      }
+    ]
+  },
+
+  "typed_values": {
+    "comment": "Value reads (`value(key, default:)`), which project the ON/OFF resolution onto the flag's declared value: ON -> on_value, OFF -> off_value. `read_as` is the type the calling code asked for and `code_default` is its compiled-in default; a read of the wrong type, an unknown value_type, or a value that does not match its declared type resolves to that default (rule 4). A flag with no value_type is a bool flag with on_value true / off_value false.",
+    "cases": [
+      {
+        "name": "int_flag_on_serves_on_value",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 50
+      },
+      {
+        "name": "int_flag_kill_switch_serves_off_value",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": false,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 10,
+        "note": "the kill switch serves off_value, not the code default: OFF is a decision, absence is the fail-safe"
+      },
+      {
+        "name": "int_flag_outside_rollout_serves_off_value",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 25
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 10,
+        "note": "bucket(grocery_v2, user-123) == 25; ON iff bucket < percent, so this user is OFF"
+      },
+      {
+        "name": "matching_rule_serving_false_gives_off_value",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [
+            { "conditions": [ { "attribute": "build", "op": "lt", "value": 9000 } ], "serve": false }
+          ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "build": 8950 },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 10
+      },
+      {
+        "name": "double_flag_serves_fractional_value",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "value_type": "double",
+          "on_value": 1.5,
+          "off_value": 0.75,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "double",
+        "code_default": 0.25,
+        "expected_value": 1.5
+      },
+      {
+        "name": "string_flag_serves_string_value",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "value_type": "string",
+          "on_value": "annual_first",
+          "off_value": "monthly_first",
+          "rules": [],
+          "default_rollout_percent": 0
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "string",
+        "code_default": "control",
+        "expected_value": "monthly_first"
+      },
+      {
+        "name": "bool_flag_value_read_matches_resolution",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "bool",
+          "on_value": true,
+          "off_value": false,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true
+      },
+      {
+        "name": "flag_without_value_type_reads_as_bool",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": true,
+        "note": "absent value fields mean bool/true/false, so every flag written before typed values existed is unchanged"
+      },
+      {
+        "name": "flag_without_value_type_read_as_int_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 7
+      },
+      {
+        "name": "read_of_wrong_type_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "double",
+        "code_default": 0.5,
+        "expected_value": 0.5,
+        "note": "reads are exact: no int -> double widening, no coercion"
+      },
+      {
+        "name": "mistyped_on_value_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": "50",
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 7
+      },
+      {
+        "name": "fractional_value_in_int_flag_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50.5,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 7
+      },
+      {
+        "name": "integral_value_in_double_flag_is_served",
+        "flag": {
+          "key": "new_paywall",
+          "enabled": true,
+          "value_type": "double",
+          "on_value": 2,
+          "off_value": 1,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "double",
+        "code_default": 0.25,
+        "expected_value": 2,
+        "note": "JSON cannot mark 2.0 as fractional; a double flag accepts any number"
+      },
+      {
+        "name": "unknown_value_type_is_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "json",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 7
+      },
+      {
+        "name": "non_canonical_bool_values_are_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "bool",
+          "on_value": 1,
+          "off_value": 0,
+          "rules": [],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123" },
+        "read_as": "bool",
+        "code_default": false,
+        "expected_value": false,
+        "note": "a bool flag's values are exactly true/false; anything else is an unrecognized construct"
+      },
+      {
+        "name": "unknown_op_makes_value_read_code_default",
+        "flag": {
+          "key": "grocery_v2",
+          "enabled": true,
+          "value_type": "int",
+          "on_value": 50,
+          "off_value": 10,
+          "rules": [ { "conditions": [ { "attribute": "build", "op": "divisible_by", "value": 2 } ], "serve": true } ],
+          "default_rollout_percent": 100
+        },
+        "context": { "stable_id": "user-123", "build": 9042 },
+        "read_as": "int",
+        "code_default": 7,
+        "expected_value": 7,
+        "note": "rule 4 applies to value reads exactly as it does to boolean reads"
+      },
+      {
+        "name": "absent_flag_is_code_default",
+        "flag": null,
+        "context": { "stable_id": "user-123" },
+        "read_as": "string",
+        "code_default": "control",
+        "expected_value": "control"
       }
     ]
   }

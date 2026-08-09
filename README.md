@@ -30,6 +30,10 @@ enum Flags {
         configuration: AtelierConfiguration(organization: "acme", product: "myapp"))
 
     static var groceryV2: Bool { client.isEnabled("grocery_v2", default: false) }
+
+    // A flag can carry a typed value instead of a bare on/off: the same
+    // targeting decides on or off, and the flag says what each is worth.
+    static var importBatchSize: Int { client.value("import_batch_size", default: 10) }
 }
 ```
 
@@ -38,6 +42,12 @@ snapshot (disk-cache-first, refreshed in the background), falling back
 to the compiled-in default. The default should equal current shipped
 behavior, so "Atelier unreachable" is indistinguishable from "nothing
 changed".
+
+`value(_:default:)` reads `Bool`, `Int`, `Double` and `String`. Reads
+are exact: asking for a type the flag does not declare — including a
+`Double` from an integer flag — gives the compiled-in default, as does
+a flag that has been retyped since your build shipped. `isEnabled`
+works on a flag of any type and reports its on/off resolution.
 
 On OSes with the Observation framework (iOS 17, macOS 14, …), a flag
 read inside a SwiftUI `body` subscribes the view — it re-renders when

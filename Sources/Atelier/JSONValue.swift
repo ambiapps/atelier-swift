@@ -64,6 +64,16 @@ extension JSONValue {
         return nil
     }
 
+    /// Whole numbers included: JSON cannot mark `2` as fractional, and
+    /// the decoder above resolves it to `.int` (ADR 0013).
+    var doubleValue: Double? {
+        switch self {
+        case .double(let value): return value
+        case .int(let value): return Double(value)
+        default: return nil
+        }
+    }
+
     var stringValue: String? {
         if case .string(let value) = self { return value }
         return nil
