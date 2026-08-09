@@ -234,6 +234,89 @@ final class ClientTests: XCTestCase {
         XCTAssertTrue(client.isEnabled("on_for_all", default: false))
     }
 
+    // MARK: - Typed values (ADR 0013)
+
+    /// A project's config as the CDN serves it, with one typed flag.
+    private static let typedRows = """
+        [
+          {"key": "batch_size", "enabled": true, "value_type": "int",
+           "on_value": 50, "off_value": 10,
+           "rules": [], "default_rollout_percent": 100},
+          {"key": "price_factor", "enabled": false, "value_type": "double",
+           "on_value": 1.5, "off_value": 0.75,
+           "rules": [], "default_rollout_percent": 100},
+          {"key": "paywall_copy", "enabled": true, "value_type": "string",
+           "on_value": "annual_first", "off_value": "monthly_first",
+           "rules": [], "default_rollout_percent": 100},
+          {"key": "plain", "enabled": true, "rules": [], "default_rollout_percent": 100}
+        ]
+        """
+
+    private func makeTypedClient() async -> AtelierClient {
+        let transport = StubTransport(flagsJSON: Self.typedRows)
+        let client = makeClient(transport: transport, cache: makeCache())
+        await waitUntil({ client.isEnabled("batch_size", default: false) })
+        return client
+    }
+
+    func testTypedReadsServeTheFlagsValues() async {
+        let client = await makeTypedClient()
+        XCTAssertEqual(client.value("batch_size", default: 7), 50)
+        XCTAssertEqual(client.value("paywall_copy", default: "control"), "annual_first")
+        // The kill switch serves the off value, not the app's default.
+        XCTAssertEqual(client.value("price_factor", default: 0.25), 0.75)
+    }
+
+    func testTypedReadOfAnotherTypeFallsBackToTheCompiledDefault() async {
+        let client = await makeTypedClient()
+        // Reads are exact: no int -> double widening, no coercion.
+        XCTAssertEqual(client.value("batch_size", default: 0.5), 0.5)
+        XCTAssertEqual(client.value("batch_size", default: "none"), "none")
+        XCTAssertEqual(client.value("paywall_copy", default: 7), 7)
+    }
+
+    func testUntypedFlagIsABooleanFlag() async {
+        let client = await makeTypedClient()
+        XCTAssertTrue(client.value("plain", default: false))
+        // …and asking it for another type gets the compiled-in default.
+        XCTAssertEqual(client.value("plain", default: 7), 7)
+    }
+
+    /// The compatibility claim of ADR 0013: a build that predates typed
+    /// values reads a typed flag exactly as it always did — the
+    /// resolution, unaffected by the value fields it cannot see.
+    func testIsEnabledIgnoresValueTypeEntirely() async {
+        let client = await makeTypedClient()
+        XCTAssertTrue(client.isEnabled("batch_size", default: false))
+        XCTAssertFalse(client.isEnabled("price_factor", default: true))
+    }
+
+    func testMissingTypedFlagUsesTheCompiledDefault() async {
+        let client = await makeTypedClient()
+        XCTAssertEqual(client.value("never_created", default: 7), 7)
+    }
+
+    func testTypedReadFiresTheExposureHookWithTheResolution() async {
+        let exposures = ValuesBox<(String, Bool)>()
+        var configuration = makeConfiguration()
+        configuration.onExposure = { key, isOn in exposures.append((key, isOn)) }
+        let client = AtelierClient(
+            configuration: configuration,
+            transport: StubTransport(flagsJSON: Self.typedRows),
+            cacheOverride: makeCache(),
+            now: { Date() },
+            defaults: makeDefaults())
+        await waitUntil({ client.isEnabled("batch_size", default: false) })
+
+        _ = client.value("batch_size", default: 7)
+        XCTAssertTrue(exposures.values.contains { $0.0 == "batch_size" && $0.1 })
+
+        // A read that fell back reports nothing: there is no resolution
+        // to report, only the app's own default.
+        _ = client.value("never_created", default: 7)
+        XCTAssertFalse(exposures.values.contains { $0.0 == "never_created" })
+    }
+
     // MARK: - Endpoint discovery (ADR 0008)
 
     func testFlagsAreFetchedFromDirectoryResolvedEndpoint() async {

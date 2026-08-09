@@ -184,6 +184,50 @@ public actor AtelierClient {
         return isOn
     }
 
+    /// Typed value reads (ADR 0013). Targeting resolves ON/OFF exactly as
+    /// `isEnabled` does; this returns what the flag says that resolution
+    /// is worth — its `on_value` or `off_value`.
+    ///
+    /// The compiled-in default is returned whenever a value cannot be
+    /// read: the flag is absent, the config carries something this build
+    /// does not recognize (rule 4), or the flag declares another type.
+    /// Reads are exact — asking for a `Double` from an `int` flag gives
+    /// the default rather than a converted value — so the default must
+    /// be a value the call site can always live with.
+    public nonisolated func value(_ key: String, default codeDefault: Bool) -> Bool {
+        read(key, as: .bool)?.boolValue ?? codeDefault
+    }
+
+    public nonisolated func value(_ key: String, default codeDefault: Int) -> Int {
+        read(key, as: .int)?.intValue ?? codeDefault
+    }
+
+    public nonisolated func value(_ key: String, default codeDefault: Double) -> Double {
+        read(key, as: .double)?.doubleValue ?? codeDefault
+    }
+
+    public nonisolated func value(_ key: String, default codeDefault: String) -> String {
+        read(key, as: .string)?.stringValue ?? codeDefault
+    }
+
+    /// Shared body of the typed reads. Observation-tracked like
+    /// `isEnabled`, and fires the exposure hook with the resolution the
+    /// value came from — nil (the compiled-in default) reports nothing,
+    /// because there is no resolution to report.
+    private nonisolated func read(_ key: String, as type: Evaluator.ValueType) -> JSONValue? {
+        observation.trackAccess()
+        let snapshot = shared.read()
+        guard
+            let resolved = Evaluator.resolveValue(
+                flag: snapshot.flags[key],
+                context: snapshot.context,
+                stableID: snapshot.stableID,
+                readAs: type)
+        else { return nil }
+        configuration.onExposure?(key, resolved.isOn)
+        return resolved.value
+    }
+
     // MARK: - Observation (react to changes mid-session)
 
     /// Coarse change signal: emits whenever resolved values may have
@@ -327,7 +371,9 @@ public actor AtelierClient {
             URLQueryItem(name: "org", value: "eq.\(configuration.organization)"),
             URLQueryItem(name: "app", value: "eq.\(configuration.product)"),
             URLQueryItem(
-                name: "select", value: "key,enabled,rules,default_rollout_percent"),
+                name: "select",
+                value: "key,enabled,value_type,on_value,off_value,rules,"
+                    + "default_rollout_percent"),
         ]
         guard let url = components.url else { return }
         var request = URLRequest(url: url)
