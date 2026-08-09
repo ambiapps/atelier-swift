@@ -78,6 +78,36 @@ await Flags.client.setContext(
         locale: locale))
 ```
 
+### Push poke (optional)
+
+Admins can opt to wake installed apps right after saving a flag change
+("Push to devices now" in the Atelier UI) instead of waiting for the
+next refresh. Two app-delegate forwards make the app reachable; both
+are best-effort — skipping this wiring just means the app stays on the
+ordinary refresh cadence:
+
+```swift
+func application(_ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    Task { await Flags.client.registerDeviceToken(deviceToken) }
+}
+
+func application(_ application: UIApplication,
+    didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async
+    -> UIBackgroundFetchResult {
+    await Flags.client.handlePushNotification(userInfo) ? .newData : .noData
+}
+```
+
+The app needs the remote-notification background mode and a
+`registerForRemoteNotifications()` call (silent pushes need no
+user-facing permission). Pokes carry no flag values — the SDK just
+refetches through the normal path. `handlePushNotification` returns
+`false` for payloads that aren't Atelier pokes, so it composes with
+your own pushes. `registerDeviceToken`'s default environment maps
+debug builds to the APNs sandbox and release builds to production;
+pass an explicit `PushEnvironment` if your build setup differs.
+
 ## Manage flags from your coding agent
 
 Atelier's console speaks [MCP](https://modelcontextprotocol.io), so the

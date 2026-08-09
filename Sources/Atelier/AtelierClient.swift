@@ -81,6 +81,12 @@ public actor AtelierClient {
     /// re-resolved from the directory document on every refresh cycle.
     private var endpoint: AtelierEndpoint?
 
+    /// Device registration for the push poke (ADR 0010): pending until
+    /// one upload succeeds, retried on each refresh cycle. Best-effort —
+    /// a device that never registers just refreshes on the v1 cadence.
+    private var pendingRegistration: DeviceRegistration?
+    private var uploadedRegistration: DeviceRegistration?
+
     // MARK: - Init
 
     public init(configuration: AtelierConfiguration) {
@@ -285,6 +291,122 @@ public actor AtelierClient {
         } catch {
             // Fetch/parse failure: keep serving last-good. "Atelier is
             // down" must be indistinguishable from "nothing changed".
+        }
+
+        // Piggyback the device registration on the refresh cycle so a
+        // token registered before the endpoint resolved still uploads.
+        await uploadRegistrationIfPending()
+    }
+
+    // MARK: - Push poke (ADR 0010)
+
+    private struct DeviceRegistration: Equatable, Sendable {
+        var token: String
+        var platform: String
+        var topic: String
+        var environment: String
+    }
+
+    /// Registers this device for the opt-in push poke: an admin saving a
+    /// flag change can wake the app to refetch immediately instead of at
+    /// its next foreground. Call from the app's
+    /// `didRegisterForRemoteNotificationsWithDeviceToken` (every launch —
+    /// registration is idempotent). Best-effort by design: failure to
+    /// register costs latency, never correctness.
+    public func registerDeviceToken(
+        _ deviceToken: Data, environment: PushEnvironment = .automatic
+    ) async {
+        let registration = DeviceRegistration(
+            token: deviceToken.map { String(format: "%02x", $0) }.joined(),
+            platform: Self.currentPlatform,
+            topic: Bundle.main.bundleIdentifier ?? "unknown",
+            environment: Self.resolve(environment))
+        guard registration != uploadedRegistration else { return }
+        pendingRegistration = registration
+        await uploadRegistrationIfPending()
+    }
+
+    /// Call from the app's silent-push handler
+    /// (`didReceiveRemoteNotification`). Returns whether the payload was
+    /// an Atelier poke; when it is, a refresh has already completed (or
+    /// failed harmlessly — last-good keeps serving) by the time this
+    /// returns, so the caller can report `.newData` to the system.
+    public nonisolated func handlePushNotification(
+        _ userInfo: [AnyHashable: Any]
+    ) async -> Bool {
+        guard userInfo["atelier"] != nil else { return false }
+        await pokeRefresh()
+        return true
+    }
+
+    /// A poke bypasses the refresh debounce: the push exists to say
+    /// something changed *right now*.
+    private func pokeRefresh() async {
+        lastRefresh = now()
+        await performRefresh()
+    }
+
+    private func uploadRegistrationIfPending() async {
+        guard let registration = pendingRegistration,
+            registration != uploadedRegistration,
+            let endpoint
+        else { return }
+        // The registry is reachable only through the append-only
+        // `register_device` RPC (re-registering an existing token is a
+        // no-op server-side); the anon key has no access to the table
+        // itself.
+        var request = URLRequest(
+            url: endpoint.baseURL.appendingPathComponent("rest/v1/rpc/register_device"))
+        request.httpMethod = "POST"
+        request.setValue(endpoint.apiKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(endpoint.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "org": configuration.organization,
+            "app": configuration.product,
+            "token": registration.token,
+            "platform": registration.platform,
+            "topic": registration.topic,
+            "environment": registration.environment,
+        ])
+        do {
+            let (_, response) = try await transport.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                (200..<300).contains(http.statusCode)
+            else { return }
+            uploadedRegistration = registration
+            pendingRegistration = nil
+        } catch {
+            // Keep it pending; the next refresh cycle retries.
+        }
+    }
+
+    private static var currentPlatform: String {
+        #if os(iOS)
+            return "ios"
+        #elseif os(macOS)
+            return "macos"
+        #elseif os(tvOS)
+            return "tvos"
+        #elseif os(watchOS)
+            return "watchos"
+        #elseif os(visionOS)
+            return "visionos"
+        #else
+            return "unknown"
+        #endif
+    }
+
+    private static func resolve(_ environment: PushEnvironment) -> String {
+        switch environment {
+        case .production: return "production"
+        case .sandbox: return "sandbox"
+        case .automatic:
+            #if DEBUG
+                return "sandbox"
+            #else
+                return "production"
+            #endif
         }
     }
 
