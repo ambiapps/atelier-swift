@@ -43,7 +43,7 @@ struct DiskCache: Sendable {
     func load() -> ConfigDocument? {
         guard let data = try? Data(contentsOf: fileURL),
             let document = try? JSONDecoder().decode(ConfigDocument.self, from: data),
-            document.schemaVersion <= ConfigDocument.supportedSchemaVersion
+            document.schemaVersion == ConfigDocument.supportedSchemaVersion
         else { return nil }
         return document
     }

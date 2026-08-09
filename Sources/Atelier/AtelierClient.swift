@@ -172,48 +172,47 @@ public actor AtelierClient {
     /// Observable: inside an observation-tracked scope (a SwiftUI `body`,
     /// `withObservationTracking`) this read re-fires when resolved values
     /// change, on OSes with the Observation framework (iOS 17+ etc.).
+    /// Whether a feature is on for this user.
+    ///
+    /// `codeDefault` is not a formality: it is what this call site does
+    /// unless a rule in the config overrides this particular user
+    /// (ADR 0014). It is also what you get when the flag is absent, when
+    /// the flag is not live, when the config carries something this build
+    /// cannot parse (rule 4), and when Atelier is unreachable — so it
+    /// must be the value the code can always live with, normally the
+    /// current behavior.
+    ///
+    /// Observable: inside an observation-tracked scope (a SwiftUI `body`,
+    /// `withObservationTracking`) this read re-fires when resolved values
+    /// change, on OSes with the Observation framework (iOS 17+ etc.).
     public nonisolated func isEnabled(_ key: String, default codeDefault: Bool) -> Bool {
-        observation.trackAccess()
-        let snapshot = shared.read()
-        let isOn = Evaluator.resolve(
-            flag: snapshot.flags[key],
-            context: snapshot.context,
-            stableID: snapshot.stableID,
-            codeDefault: codeDefault)
-        configuration.onExposure?(key, isOn)
-        return isOn
+        value(key, default: codeDefault)
     }
 
-    /// Typed value reads (ADR 0013). Targeting resolves ON/OFF exactly as
-    /// `isEnabled` does; this returns what the flag says that resolution
-    /// is worth — its `on_value` or `off_value`.
+    /// Typed value reads (ADR 0013). Returns the value of the first rule
+    /// that matches this user, or `codeDefault` when none does.
     ///
-    /// The compiled-in default is returned whenever a value cannot be
-    /// read: the flag is absent, the config carries something this build
-    /// does not recognize (rule 4), or the flag declares another type.
     /// Reads are exact — asking for a `Double` from an `int` flag gives
-    /// the default rather than a converted value — so the default must
-    /// be a value the call site can always live with.
+    /// the default rather than a converted value — and `isEnabled` is
+    /// simply the `Bool` overload of this.
     public nonisolated func value(_ key: String, default codeDefault: Bool) -> Bool {
-        read(key, as: .bool)?.boolValue ?? codeDefault
+        read(key, as: .bool)?.boolValue ?? exposing(key, codeDefault, .bool(codeDefault))
     }
 
     public nonisolated func value(_ key: String, default codeDefault: Int) -> Int {
-        read(key, as: .int)?.intValue ?? codeDefault
+        read(key, as: .int)?.intValue ?? exposing(key, codeDefault, .int(codeDefault))
     }
 
     public nonisolated func value(_ key: String, default codeDefault: Double) -> Double {
-        read(key, as: .double)?.doubleValue ?? codeDefault
+        read(key, as: .double)?.doubleValue ?? exposing(key, codeDefault, .double(codeDefault))
     }
 
     public nonisolated func value(_ key: String, default codeDefault: String) -> String {
-        read(key, as: .string)?.stringValue ?? codeDefault
+        read(key, as: .string)?.stringValue ?? exposing(key, codeDefault, .string(codeDefault))
     }
 
-    /// Shared body of the typed reads. Observation-tracked like
-    /// `isEnabled`, and fires the exposure hook with the resolution the
-    /// value came from — nil (the compiled-in default) reports nothing,
-    /// because there is no resolution to report.
+    /// Shared body of the reads. Observation-tracked, and fires the
+    /// exposure hook with the value the caller is about to act on.
     private nonisolated func read(_ key: String, as type: Evaluator.ValueType) -> JSONValue? {
         observation.trackAccess()
         let snapshot = shared.read()
@@ -224,8 +223,16 @@ public actor AtelierClient {
                 stableID: snapshot.stableID,
                 readAs: type)
         else { return nil }
-        configuration.onExposure?(key, resolved.isOn)
-        return resolved.value
+        configuration.onExposure?(key, resolved)
+        return resolved
+    }
+
+    /// Reports an exposure to the compiled-in default and returns it.
+    /// The app acted on a value either way, and "which users fell back to
+    /// the default?" is exactly the question a rollout dashboard asks.
+    private nonisolated func exposing<T>(_ key: String, _ codeDefault: T, _ json: JSONValue) -> T {
+        configuration.onExposure?(key, json)
+        return codeDefault
     }
 
     // MARK: - Observation (react to changes mid-session)
@@ -262,14 +269,15 @@ public actor AtelierClient {
                 var last: Bool?
                 func emitIfChanged() {
                     let snapshot = state.read()
-                    let isOn = Evaluator.resolve(
-                        flag: snapshot.flags[key],
-                        context: snapshot.context,
-                        stableID: snapshot.stableID,
-                        codeDefault: codeDefault)
+                    let isOn =
+                        Evaluator.resolveValue(
+                            flag: snapshot.flags[key],
+                            context: snapshot.context,
+                            stableID: snapshot.stableID,
+                            readAs: .bool)?.boolValue ?? codeDefault
                     guard isOn != last else { return }
                     last = isOn
-                    onExposure?(key, isOn)
+                    onExposure?(key, .bool(isOn))
                     continuation.yield(isOn)
                 }
                 emitIfChanged()

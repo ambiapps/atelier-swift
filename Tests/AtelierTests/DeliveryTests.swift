@@ -36,14 +36,14 @@ final class DeliveryTests: XCTestCase {
             """
 
         static let objectJSON = """
-            {"schema_version": 1, "app": "ambre", "revision": 7, "flags": [
-              {"key": "from_cdn", "enabled": true, "rules": [], "default_rollout_percent": 100}
+            {"schema_version": 2, "app": "ambre", "revision": 7, "flags": [
+              {"key": "from_cdn", "enabled": true, "rules": [{"conditions": [], "value": true}]}
             ]}
             """
 
         static let rowsJSON = """
-            [{"key": "from_postgrest", "enabled": true, "rules": [], \
-            "default_rollout_percent": 100}]
+            [{"key": "from_postgrest", "enabled": true, \
+            "rules": [{"conditions": [], "value": true}]}]
             """
 
         private var _directoryJSON: String
@@ -232,9 +232,9 @@ final class DeliveryTests: XCTestCase {
         let transport = StubTransport()
         transport.setObject(
             json: """
-                {"schema_version": 1, "app": "lysten", "flags": [
-                  {"key": "wrong_product", "enabled": true, "rules": [], \
-                "default_rollout_percent": 100}
+                {"schema_version": 2, "app": "lysten", "flags": [
+                  {"key": "wrong_product", "enabled": true, \
+                "rules": [{"conditions": [], "value": true}]}
                 ]}
                 """)
         let client = makeClient(transport: transport, cache: makeCache())
@@ -255,11 +255,13 @@ final class DeliveryTests: XCTestCase {
         let cache = makeCache()
         cache.store(
             ConfigDocument(
-                schemaVersion: 1, app: "ambre",
+                schemaVersion: ConfigDocument.supportedSchemaVersion, app: "ambre",
                 flags: [
                     .object([
                         "key": .string("cached_flag"), "enabled": .bool(true),
-                        "rules": .array([]), "default_rollout_percent": .int(100),
+                        "rules": .array([
+                            .object(["conditions": .array([]), "value": .bool(true)])
+                        ]),
                     ])
                 ]))
         let transport = StubTransport()
@@ -286,11 +288,13 @@ final class DeliveryTests: XCTestCase {
         let cache = makeCache()
         cache.store(
             ConfigDocument(
-                schemaVersion: 1, app: "ambre",
+                schemaVersion: ConfigDocument.supportedSchemaVersion, app: "ambre",
                 flags: [
                     .object([
                         "key": .string("cached_flag"), "enabled": .bool(true),
-                        "rules": .array([]), "default_rollout_percent": .int(100),
+                        "rules": .array([
+                            .object(["conditions": .array([]), "value": .bool(true)])
+                        ]),
                     ])
                 ]))
         let transport = StubTransport()

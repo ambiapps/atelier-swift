@@ -21,10 +21,11 @@ public struct AtelierConfiguration: Sendable {
     /// read the same cache (extensions never fetch).
     public var appGroupIdentifier: String?
 
-    /// Exposure hook: called when a flag is read, so host apps can log
-    /// exposure events to their own analytics. The SDK itself has no
-    /// analytics dependency.
-    public var onExposure: (@Sendable (_ key: String, _ isOn: Bool) -> Void)?
+    /// Exposure hook: called when a flag is read, with the value the app
+    /// is about to act on — a rule's value, or the compiled-in default
+    /// when no rule overrode this user (ADR 0014). Host apps log these to
+    /// their own analytics; the SDK has no analytics dependency.
+    public var onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)?
 
     /// Minimum interval between network refreshes; `refresh()` calls
     /// inside the window are dropped (docs/sdk-swift.md).
@@ -35,7 +36,7 @@ public struct AtelierConfiguration: Sendable {
         product: String,
         pollWhileForegrounded: Duration? = nil,
         appGroupIdentifier: String? = nil,
-        onExposure: (@Sendable (_ key: String, _ isOn: Bool) -> Void)? = nil,
+        onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)? = nil,
         minimumRefreshInterval: TimeInterval = 60
     ) {
         self.organization = organization
