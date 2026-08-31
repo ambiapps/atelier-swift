@@ -31,13 +31,30 @@ public struct AtelierConfiguration: Sendable {
     /// inside the window are dropped (docs/sdk-swift.md).
     public var minimumRefreshInterval: TimeInterval
 
+    /// Public keys this build accepts config signatures from (ADR
+    /// 0017). Each project has its own signing key; copy `x`, `y` and
+    /// `kid` out of the JWKS Atelier publishes for your project.
+    ///
+    /// **Empty — the default — means this build does not verify** and
+    /// reads the unsigned config exactly as before signing existed.
+    /// That is what makes verification adoptable: ship the key first,
+    /// turn on signing second.
+    ///
+    /// Pass more than one across a rotation. A build trusts every key
+    /// here, so shipping the new key alongside the old one *before*
+    /// Atelier starts signing with it is what keeps rotation from
+    /// stranding installs that have not updated — they would otherwise
+    /// reject every document and sit on last-good until they do.
+    public var signingKeys: [AtelierSigningKey]
+
     public init(
         organization: String,
         product: String,
         pollWhileForegrounded: Duration? = nil,
         appGroupIdentifier: String? = nil,
         onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)? = nil,
-        minimumRefreshInterval: TimeInterval = 60
+        minimumRefreshInterval: TimeInterval = 60,
+        signingKeys: [AtelierSigningKey] = []
     ) {
         self.organization = organization
         self.product = product
@@ -45,6 +62,29 @@ public struct AtelierConfiguration: Sendable {
         self.appGroupIdentifier = appGroupIdentifier
         self.onExposure = onExposure
         self.minimumRefreshInterval = minimumRefreshInterval
+        self.signingKeys = signingKeys
+    }
+}
+
+/// One public key a build will accept signed config from, in the form
+/// the published JWKS gives it (ADR 0017).
+///
+/// Keys are per project: a leaked private half costs that one project
+/// its signature, not every tenant's. The public half is not secret —
+/// it is served on the CDN — so it belongs in your source next to your
+/// organization and product identifiers.
+public struct AtelierSigningKey: Sendable, Equatable {
+    /// Key id, matched against the `kid` in the signed document's
+    /// header so a rotation can be in flight without ambiguity.
+    public let kid: String
+    /// The JWK's `x` and `y`, base64url, exactly as published.
+    public let x: String
+    public let y: String
+
+    public init(kid: String, x: String, y: String) {
+        self.kid = kid
+        self.x = x
+        self.y = y
     }
 }
 

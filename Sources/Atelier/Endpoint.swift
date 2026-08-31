@@ -35,9 +35,22 @@ struct AtelierEndpoint: Codable, Equatable, Sendable {
     /// The object holding one product's config, or nil when the backend
     /// advertises no CDN path.
     func configObjectURL(organization: String, product: String) -> URL? {
+        configObjectURL(organization: organization, product: product, extension: "json")
+    }
+
+    /// The signed form of the same document (ADR 0017): an ES256 JWS
+    /// whose payload is the config document. A build that verifies reads
+    /// this and never the plain object.
+    func signedConfigObjectURL(organization: String, product: String) -> URL? {
+        configObjectURL(organization: organization, product: product, extension: "jws")
+    }
+
+    private func configObjectURL(
+        organization: String, product: String, extension pathExtension: String
+    ) -> URL? {
         configURL?
             .appendingPathComponent(organization, isDirectory: true)
-            .appendingPathComponent("\(product).json")
+            .appendingPathComponent("\(product).\(pathExtension)")
     }
 }
 

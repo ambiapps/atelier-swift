@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -75,6 +76,16 @@ public actor AtelierClient {
     private let observation: ObservationSupport
     private let now: @Sendable () -> Date
     private var lastRefresh: Date?
+
+    /// Verification keys from `AtelierConfiguration.signingKeys` (ADR
+    /// 0017). Empty means this build does not verify and reads the
+    /// unsigned object, exactly as before signing existed.
+    private let trustAnchors: [String: P256.Signing.PublicKey]
+
+    /// Revision of the config currently applied, for replay protection:
+    /// a signature proves a document is authentic, not that it is
+    /// current, so an older genuinely-signed document must be refused.
+    private var currentRevision: Int?
     private var refreshTask: Task<Void, Never>?
 
     /// Last-known service endpoint (ADR 0008). Seeded from disk at init;
@@ -108,6 +119,7 @@ public actor AtelierClient {
     ) {
         self.configuration = configuration
         self.transport = transport
+        self.trustAnchors = ConfigSignature.anchors(from: configuration.signingKeys)
         self.cache =
             cacheOverride
             ?? DiskCache(
@@ -124,6 +136,7 @@ public actor AtelierClient {
         // to compiled-in defaults (empty snapshot) on first launch or
         // corrupt/unsupported cache.
         let cached = cache.load()
+        self.currentRevision = cached?.revision
         let stableID = Self.loadOrMintStableID(
             defaults: defaults ?? Self.defaultsStore(for: configuration))
         shared.write { snapshot in
@@ -318,13 +331,27 @@ public actor AtelierClient {
         // an object that is missing or unusable. `.unsupported` is not a
         // fallback case: a document from the future must be ignored
         // whole, not routed around.
-        switch await fetchPublishedConfig(endpoint: endpoint, revalidating: revalidating) {
+        //
+        // A build that verifies (ADR 0017) reads the signed object and
+        // has no fallback rung at all: rows assembled client-side carry
+        // no signature, so falling through to them would hand the whole
+        // hole back to anyone who can make one fetch fail. Its ladder is
+        // valid-signed-JWS, then last-good, then compiled-in defaults.
+        let verifying = !trustAnchors.isEmpty
+        let fetched =
+            verifying
+            ? await fetchSignedConfig(endpoint: endpoint, revalidating: revalidating)
+            : await fetchPublishedConfig(endpoint: endpoint, revalidating: revalidating)
+
+        switch fetched {
         case .document(let document):
             apply(document)
         case .unsupported:
             break
         case .unavailable:
-            await fetchConfigFromPostgREST(endpoint: endpoint)
+            if !verifying {
+                await fetchConfigFromPostgREST(endpoint: endpoint)
+            }
         }
 
         // Piggyback the device registration on the refresh cycle so a
@@ -334,6 +361,7 @@ public actor AtelierClient {
 
     private func apply(_ document: ConfigDocument) {
         cache.store(document)
+        currentRevision = document.revision ?? currentRevision
         shared.write { snapshot in
             snapshot.flags = document.flagsByKey()
         }
@@ -364,6 +392,44 @@ public actor AtelierClient {
         } catch {
             return .unavailable
         }
+    }
+
+    /// Reads `{config_url}/{organization}/{product}.jws` and verifies it
+    /// (ADR 0017). Every failure — unreachable, unsigned, wrongly
+    /// signed, misdirected, or replayed — is `.unavailable`, which for a
+    /// verifying build means last-good. Verification never blocks launch
+    /// and never surfaces an error to the user.
+    private func fetchSignedConfig(
+        endpoint: AtelierEndpoint, revalidating: Bool
+    ) async -> ConfigDocument.Fetched {
+        guard
+            let url = endpoint.signedConfigObjectURL(
+                organization: configuration.organization,
+                product: configuration.product)
+        else { return .unavailable }
+
+        var request = URLRequest(url: url)
+        if revalidating {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+
+        let token: Data
+        do {
+            let (data, response) = try await transport.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                (200..<300).contains(http.statusCode)
+            else { return .unavailable }
+            token = data
+        } catch {
+            return .unavailable
+        }
+
+        return ConfigSignature.verifiedDocument(
+            token,
+            anchors: trustAnchors,
+            organization: configuration.organization,
+            product: configuration.product,
+            cachedRevision: currentRevision)
     }
 
     /// The pre-ADR-0012 read path, kept as the fallback: bare rows,
