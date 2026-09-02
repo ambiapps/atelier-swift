@@ -146,6 +146,42 @@ audit log under your name.
 The same command, and the endpoint on its own, are shown in the console
 under **Organizations**.
 
+## Verifying signed config (optional)
+
+Flag config is public, and over TLS a third party cannot alter it — but
+a user can point their own device at an intercepting proxy and rewrite
+flag values in flight. If that matters for your app, have Atelier sign
+your project's config and give the SDK the public key:
+
+```swift
+AtelierConfiguration(
+    organization: "acme",
+    product: "myapp",
+    signingKeys: [
+        AtelierSigningKey(
+            kid: "myapp-2026-08",
+            x: "LJiVbQwvcjutcHA-Gzczw0wQUBn5UUUSERpSnHS86LE",
+            y: "Aa2UawSV7yGplLPZEQM7RnX2-fPug5wjs2JM9dD4Az4")
+    ])
+```
+
+`kid`, `x` and `y` come from the JWKS Atelier publishes for your
+project. Supplying no keys — the default — means this build does not
+verify and reads config exactly as before.
+
+A build with keys reads only the signed document and rejects anything
+that does not verify: tampered, signed by another key, aimed at another
+project, or an older revision replayed. Every rejection is an ordinary
+refresh failure — last-good keeps serving, and launch is never blocked.
+
+**Rotating means shipping first.** The key lives in your binary, so add
+the new one here *alongside* the old, ship it, wait for adoption, and
+only then switch Atelier over. The other order strands every install
+that has not updated on last-good. This is also the remedy if a key
+leaks: someone holding it can forge config only for devices they can
+already intercept, which is where you were before signing, so rotate
+through the overlap rather than pulling the key and breaking delivery.
+
 ## Design guarantees
 
 1. **Never blocks launch.** Initialization reads the disk cache and
@@ -160,6 +196,17 @@ under **Organizations**.
 5. **Nothing configured means nothing changes.** No rule matched, flag
    paused, flag deleted, backend down — every one of them is the app
    doing exactly what its own code says.
+6. **Config can be signed.** A build carrying your project's
+   verification key reads an ES256-signed document and rejects anything
+   else, closing the obvious attack on a public config — a device
+   pointed at a TLS-intercepting proxy that rewrites values in flight.
+   Verification failure is an ordinary refresh failure (guarantee 2),
+   never a blocked launch.
+
+   It stops a proxy forging config. It does not stop a patched binary,
+   and it cannot stop a device that simply refuses to fetch and keeps
+   what it cached. **Flags gate product behavior, never authorization**
+   — anything that must be enforced belongs in your backend.
 
 ## Demo
 

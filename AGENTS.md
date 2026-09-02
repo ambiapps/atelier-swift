@@ -38,7 +38,20 @@ Violating any of these is a review-blocking bug:
    `Foundation` only. In particular, no `supabase-swift` — the public
    API never names the backend; the service is located at runtime via
    the discovery document.
-7. **`se.ambi.atelier.stable_id` (UserDefaults key) and the `Atelier`
+7. **Signature trust anchors come from the host app, never the
+   network.** A build verifies against `AtelierConfiguration.signingKeys`
+   and nothing else. Never resolve a `kid` against a downloaded JWKS:
+   whoever can rewrite the config through a proxy can rewrite a JWKS
+   from the same origin, and the SDK would be checking an attacker's
+   document against an attacker's key. Equally: never dispatch on the
+   token's own `alg` (pin `ES256`), and never let a verifying build
+   fall back to the unsigned PostgREST path — either one hands the hole
+   straight back. Empty `signingKeys` means this build does not verify,
+   and must read the plain object exactly as before. Keys are per
+   project and a build may carry several: never reduce the anchor set
+   to a single key, or rotation strands every install that has not
+   updated.
+8. **`se.ambi.atelier.stable_id` (UserDefaults key) and the `Atelier`
    disk-cache directory name are frozen.** The stable ID seeds
    percentage-rollout bucketing; renaming either silently re-buckets
    every existing install.
