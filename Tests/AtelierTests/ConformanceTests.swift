@@ -102,10 +102,18 @@ final class ConformanceTests: XCTestCase {
         let spec = try Self.loadVectors().signature
         XCTAssertFalse(spec.vectors.isEmpty)
 
-        let anchors = ConfigSignature.anchors(from: [
-            AtelierSigningKey(
-                kid: spec.public_jwk.kid, x: spec.public_jwk.x, y: spec.public_jwk.y)
-        ])
+        // The vectors publish the key as a JWK, which is the JWKS
+        // format; an app supplies the same key as one string. Note the
+        // conversion is over *bytes*, not text: 32 bytes is not a
+        // multiple of 3, so concatenating the two base64url strings
+        // encodes something else entirely.
+        guard let x = ConfigSignature.base64urlDecode(Array(spec.public_jwk.x.utf8)),
+            let y = ConfigSignature.base64urlDecode(Array(spec.public_jwk.y.utf8))
+        else {
+            XCTFail("vector public_jwk is not base64url")
+            return
+        }
+        let anchors = ConfigSignature.anchors(from: [base64url(x + y)])
         XCTAssertEqual(anchors.count, 1, "vector public_jwk is not a usable P-256 key")
 
         for vector in spec.vectors {
@@ -134,7 +142,7 @@ final class ConformanceTests: XCTestCase {
         }
         let fetched = ConfigSignature.verifiedDocument(
             Data(valid.token.utf8),
-            anchors: [:],
+            anchors: [],
             organization: valid.org,
             product: valid.app,
             cachedRevision: nil)
@@ -142,6 +150,14 @@ final class ConformanceTests: XCTestCase {
             XCTFail("an empty trust store must accept nothing")
             return
         }
+    }
+
+    /// base64url of raw bytes — the form an app pastes.
+    private func base64url(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     func testEvaluationVectors() throws {

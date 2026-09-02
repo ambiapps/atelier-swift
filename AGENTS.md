@@ -48,9 +48,11 @@ Violating any of these is a review-blocking bug:
    fall back to the unsigned PostgREST path — either one hands the hole
    straight back. Empty `signingKeys` means this build does not verify,
    and must read the plain object exactly as before. Keys are per
-   project and a build may carry several: never reduce the anchor set
-   to a single key, or rotation strands every install that has not
-   updated.
+   project and a build may carry several, each one base64url string;
+   try them all. Never reduce the anchor set to a single key (rotation
+   strands every install that has not updated), and never gate on
+   `kid` — it is a label, not a selector, and a valid signature under
+   an unfamiliar kid must still be accepted.
 8. **`se.ambi.atelier.stable_id` (UserDefaults key) and the `Atelier`
    disk-cache directory name are frozen.** The stable ID seeds
    percentage-rollout bucketing; renaming either silently re-buckets

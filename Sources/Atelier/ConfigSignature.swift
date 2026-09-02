@@ -27,18 +27,14 @@ enum ConfigSignature {
     /// An entry that will not parse is dropped rather than fatal: one
     /// mistyped constant must not take the usable keys down with it,
     /// and during a rotation the other key is very likely the good one.
-    static func anchors(from keys: [AtelierSigningKey]) -> [String: P256.Signing.PublicKey] {
-        var result: [String: P256.Signing.PublicKey] = [:]
-        for entry in keys {
-            // x and y concatenated are exactly CryptoKit's raw
-            // representation for P-256.
-            guard let x = base64urlDecode(entry.x),
-                let y = base64urlDecode(entry.y),
-                let key = try? P256.Signing.PublicKey(rawRepresentation: x + y)
-            else { continue }
-            result[entry.kid] = key
+    static func anchors(from keys: [String]) -> [P256.Signing.PublicKey] {
+        keys.compactMap { entry in
+            // A P-256 public key is one value — the point — and the
+            // JWK's x and y concatenated are exactly CryptoKit's raw
+            // representation of it.
+            guard let bytes = base64urlDecode(Array(entry.utf8)) else { return nil }
+            return try? P256.Signing.PublicKey(rawRepresentation: bytes)
         }
-        return result
     }
 
     /// The whole ADR 0017 accept decision in one place: verify, check
@@ -50,7 +46,7 @@ enum ConfigSignature {
     /// function directly.
     static func verifiedDocument(
         _ token: Data,
-        anchors: [String: P256.Signing.PublicKey],
+        anchors: [P256.Signing.PublicKey],
         organization: String,
         product: String,
         cachedRevision: Int?
@@ -82,7 +78,7 @@ enum ConfigSignature {
     /// separately, when the payload is decoded.
     static func verifiedPayload(
         _ token: Data,
-        anchors: [String: P256.Signing.PublicKey],
+        anchors: [P256.Signing.PublicKey],
         organization: String
     ) -> Data? {
         // No anchors means this build does not verify; callers must not
@@ -104,7 +100,6 @@ enum ConfigSignature {
         // token is MAC'd with the public key everybody has.
         guard header.alg == "ES256" else { return nil }
         guard header.org == organization else { return nil }
-        guard let key = anchors[header.kid] else { return nil }
 
         guard let signatureBytes = base64urlDecode(rawSignature),
             let signature = try? P256.Signing.ECDSASignature(
@@ -115,14 +110,19 @@ enum ConfigSignature {
         // arrived — never over anything re-serialized, which is why no
         // JSON canonicalization question arises here.
         let signingInput = Data(rawHeader) + Data(".".utf8) + Data(rawPayload)
-        guard key.isValidSignature(signature, for: signingInput) else { return nil }
+        // Try every anchor rather than selecting one by `kid`. The
+        // signature is what authenticates the document; `kid` is a
+        // label for humans mid-rotation, and making it a gate only adds
+        // a way for a correctly signed document to be refused. Two
+        // anchors is the realistic maximum and a verify is microseconds.
+        guard anchors.contains(where: { $0.isValidSignature(signature, for: signingInput) })
+        else { return nil }
 
         return base64urlDecode(rawPayload)
     }
 
     private struct Header: Decodable {
         let alg: String
-        let kid: String
         let org: String
     }
 

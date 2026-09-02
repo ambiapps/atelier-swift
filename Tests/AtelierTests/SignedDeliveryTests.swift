@@ -113,17 +113,13 @@ final class SignedDeliveryTests: XCTestCase {
         """
     }
 
-    /// The test key in the form a host app supplies it: the JWK halves
-    /// published in the project's JWKS.
-    private static var publishedKey: AtelierSigningKey {
-        let raw = signingKey.publicKey.rawRepresentation
-        return AtelierSigningKey(
-            kid: "test-key",
-            x: base64url(raw.prefix(32)),
-            y: base64url(raw.suffix(32)))
+    /// The test key in the form a host app supplies it: one base64url
+    /// string, exactly what Project settings hands you.
+    private static var publishedKey: String {
+        base64url(signingKey.publicKey.rawRepresentation)
     }
 
-    private var anchors: [AtelierSigningKey] { [Self.publishedKey] }
+    private var anchors: [String] { [Self.publishedKey] }
 
     /// Last-good already on disk, as after any previous successful
     /// refresh.
@@ -152,7 +148,7 @@ final class SignedDeliveryTests: XCTestCase {
     }
 
     private func makeClient(
-        transport: StubTransport, cache: DiskCache, anchors: [AtelierSigningKey]
+        transport: StubTransport, cache: DiskCache, anchors: [String]
     ) -> AtelierClient {
         AtelierClient(
             configuration: AtelierConfiguration(

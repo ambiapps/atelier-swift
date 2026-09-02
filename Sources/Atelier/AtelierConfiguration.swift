@@ -32,20 +32,23 @@ public struct AtelierConfiguration: Sendable {
     public var minimumRefreshInterval: TimeInterval
 
     /// Public keys this build accepts config signatures from (ADR
-    /// 0017). Each project has its own signing key; copy `x`, `y` and
-    /// `kid` out of the JWKS Atelier publishes for your project.
+    /// 0017) — each the base64url string shown in Project settings.
+    ///
+    /// A P-256 public key is a single value, so this is a single
+    /// string: the JWK's `x` and `y` concatenated, which is what the
+    /// admin UI hands you ready to paste.
     ///
     /// **Empty — the default — means this build does not verify** and
     /// reads the unsigned config exactly as before signing existed.
     /// That is what makes verification adoptable: ship the key first,
     /// turn on signing second.
     ///
-    /// Pass more than one across a rotation. A build trusts every key
-    /// here, so shipping the new key alongside the old one *before*
-    /// Atelier starts signing with it is what keeps rotation from
-    /// stranding installs that have not updated — they would otherwise
-    /// reject every document and sit on last-good until they do.
-    public var signingKeys: [AtelierSigningKey]
+    /// Pass more than one across a rotation. Every key here is tried,
+    /// so shipping the new key alongside the old one *before* Atelier
+    /// signs with it is what keeps rotation from stranding installs
+    /// that have not updated — they would otherwise reject every
+    /// document and sit on last-good until they do.
+    public var signingKeys: [String]
 
     public init(
         organization: String,
@@ -54,7 +57,7 @@ public struct AtelierConfiguration: Sendable {
         appGroupIdentifier: String? = nil,
         onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)? = nil,
         minimumRefreshInterval: TimeInterval = 60,
-        signingKeys: [AtelierSigningKey] = []
+        signingKeys: [String] = []
     ) {
         self.organization = organization
         self.product = product
@@ -63,28 +66,6 @@ public struct AtelierConfiguration: Sendable {
         self.onExposure = onExposure
         self.minimumRefreshInterval = minimumRefreshInterval
         self.signingKeys = signingKeys
-    }
-}
-
-/// One public key a build will accept signed config from, in the form
-/// the published JWKS gives it (ADR 0017).
-///
-/// Keys are per project: a leaked private half costs that one project
-/// its signature, not every tenant's. The public half is not secret —
-/// it is served on the CDN — so it belongs in your source next to your
-/// organization and product identifiers.
-public struct AtelierSigningKey: Sendable, Equatable {
-    /// Key id, matched against the `kid` in the signed document's
-    /// header so a rotation can be in flight without ambiguity.
-    public let kid: String
-    /// The JWK's `x` and `y`, base64url, exactly as published.
-    public let x: String
-    public let y: String
-
-    public init(kid: String, x: String, y: String) {
-        self.kid = kid
-        self.x = x
-        self.y = y
     }
 }
 
