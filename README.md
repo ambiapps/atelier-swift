@@ -157,17 +157,12 @@ your project's config and give the SDK the public key:
 AtelierConfiguration(
     organization: "acme",
     product: "myapp",
-    signingKeys: [
-        AtelierSigningKey(
-            kid: "myapp-2026-08",
-            x: "LJiVbQwvcjutcHA-Gzczw0wQUBn5UUUSERpSnHS86LE",
-            y: "Aa2UawSV7yGplLPZEQM7RnX2-fPug5wjs2JM9dD4Az4")
-    ])
+    signingKeys: ["LJiVbQwvcjutcHA-Gzczw0wQUBn5UUUSERpSnHS86LEBrZRrBJXvIamUs9kRAztGdfb58-6DnCOzYkz10PgDPg"])
 ```
 
-`kid`, `x` and `y` come from the JWKS Atelier publishes for your
-project. Supplying no keys — the default — means this build does not
-verify and reads config exactly as before.
+Copy the string from Project settings, which shows this whole call
+ready to paste. Supplying no keys — the default — means this build does
+not verify and reads config exactly as before.
 
 A build with keys reads only the signed document and rejects anything
 that does not verify: tampered, signed by another key, aimed at another
@@ -175,8 +170,9 @@ project, or an older revision replayed. Every rejection is an ordinary
 refresh failure — last-good keeps serving, and launch is never blocked.
 
 **Rotating means shipping first.** The key lives in your binary, so add
-the new one here *alongside* the old, ship it, wait for adoption, and
-only then switch Atelier over. The other order strands every install
+the new one to the array *alongside* the old, ship it, wait for
+adoption, and only then switch Atelier over. Every key in the array is
+tried, so a build carrying both verifies documents signed by either. The other order strands every install
 that has not updated on last-good. This is also the remedy if a key
 leaks: someone holding it can forge config only for devices they can
 already intercept, which is where you were before signing, so rotate

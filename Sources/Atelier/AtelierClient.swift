@@ -80,7 +80,7 @@ public actor AtelierClient {
     /// Verification keys from `AtelierConfiguration.signingKeys` (ADR
     /// 0017). Empty means this build does not verify and reads the
     /// unsigned object, exactly as before signing existed.
-    private let trustAnchors: [String: P256.Signing.PublicKey]
+    private let trustAnchors: [P256.Signing.PublicKey]
 
     /// Revision of the config currently applied, for replay protection:
     /// a signature proves a document is authentic, not that it is
