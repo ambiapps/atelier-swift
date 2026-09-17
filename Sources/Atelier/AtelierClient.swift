@@ -27,6 +27,14 @@ public actor AtelierClient {
         var flags: [String: JSONValue] = [:]
         var context: [String: JSONValue] = [:]
         var stableID: String = ""
+        /// A config is being served — from a cache young enough to
+        /// trust, or from a fetch this session.
+        var hasConfig = false
+        /// The refresh fired by `init` has run to completion, whatever
+        /// its outcome — lets `waitForFirstConfig` stop waiting the
+        /// moment an offline launch has failed rather than at its
+        /// timeout.
+        var initialRefreshFinished = false
     }
 
     private final class SharedState: @unchecked Sendable {
@@ -135,18 +143,33 @@ public actor AtelierClient {
         // Cold boot: synchronously load last-good from disk. Falls back
         // to compiled-in defaults (empty snapshot) on first launch or
         // corrupt/unsupported cache.
-        let cached = cache.load()
-        self.currentRevision = cached?.revision
+        //
+        // A cache older than `maximumCacheAge` is not served — but its
+        // revision still seeds replay protection: ignoring a stale
+        // document must not make an even older signed one acceptable.
+        let loaded = cache.load()
+        self.currentRevision = loaded?.revision
+        let cached: ConfigDocument? = {
+            guard let maximumAge = configuration.maximumCacheAge else { return loaded }
+            guard let stored = cache.lastStored(),
+                now().timeIntervalSince(stored) <= maximumAge
+            else { return nil }
+            return loaded
+        }()
         let stableID = Self.loadOrMintStableID(
             defaults: defaults ?? Self.defaultsStore(for: configuration))
         shared.write { snapshot in
             snapshot.flags = cached?.flagsByKey() ?? [:]
+            snapshot.hasConfig = cached != nil
             snapshot.stableID = stableID
             snapshot.context["stable_id"] = .string(stableID)
         }
 
         // Background refresh — fire-and-forget, never awaited by init.
-        Task { [weak self] in await self?.refresh() }
+        Task { [weak self] in
+            await self?.refresh()
+            self?.shared.write { $0.initialRefreshFinished = true }
+        }
         Task { [weak self] in await self?.observeForegroundAndPoll() }
     }
 
@@ -246,6 +269,58 @@ public actor AtelierClient {
     private nonisolated func exposing<T>(_ key: String, _ codeDefault: T, _ json: JSONValue) -> T {
         configuration.onExposure?(key, json)
         return codeDefault
+    }
+
+    // MARK: - First config
+
+    /// Whether reads are resolving against a config — a cache young
+    /// enough to serve (see `AtelierConfiguration.maximumCacheAge`) or a
+    /// fetch this session — rather than falling back to compiled-in
+    /// defaults because there is nothing to resolve against. `false` on
+    /// a first launch until the first fetch lands.
+    ///
+    /// For analytics: a read made while this is `false` put the user on
+    /// the default whatever the rollout says, and an experiment wants to
+    /// tell those exposures apart.
+    public nonisolated var hasLoadedConfig: Bool {
+        shared.read().hasConfig
+    }
+
+    /// Suspends until a config is being served, the launch refresh has
+    /// finished without producing one (offline, unreachable, rejected),
+    /// or `timeout` elapses — whichever is first. Returns
+    /// `hasLoadedConfig`.
+    ///
+    /// Returns immediately when the disk cache already supplied a
+    /// config, so only a first launch (or one whose cache aged out)
+    /// ever waits.
+    ///
+    /// **Opt-in, and bounded by the caller.** Reads never wait and
+    /// nothing in the SDK calls this; it exists for the one screen that
+    /// would rather show a brief loading state than render an
+    /// experiment's control arm to every new install. Always pass a
+    /// timeout you are willing to add to a launch.
+    public nonisolated func waitForFirstConfig(timeout: Duration) async -> Bool {
+        let state = shared
+        func settled() -> Bool {
+            let snapshot = state.read()
+            return snapshot.hasConfig || snapshot.initialRefreshFinished
+        }
+        if settled() { return state.read().hasConfig }
+
+        // Subscribe before re-checking so a config landing in between
+        // is buffered, not missed.
+        let changes = updates
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                if settled() { return }
+                for await _ in changes where settled() { return }
+            }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
+        return state.read().hasConfig
     }
 
     // MARK: - Observation (react to changes mid-session)
@@ -364,6 +439,7 @@ public actor AtelierClient {
         currentRevision = document.revision ?? currentRevision
         shared.write { snapshot in
             snapshot.flags = document.flagsByKey()
+            snapshot.hasConfig = true
         }
     }
 

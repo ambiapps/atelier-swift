@@ -48,6 +48,16 @@ struct DiskCache: Sendable {
         return document
     }
 
+    /// When the cached document was last written — every successful
+    /// fetch rewrites it, identical or not, so this is "when the config
+    /// was last confirmed", which is what `maximumCacheAge` measures.
+    /// The file's modification date rather than a field in the document:
+    /// the document is the server's, and its shape is the spec's.
+    func lastStored() -> Date? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        return attributes?[.modificationDate] as? Date
+    }
+
     func store(_ document: ConfigDocument) {
         guard let data = try? JSONEncoder().encode(document) else { return }
         let directory = fileURL.deletingLastPathComponent()
