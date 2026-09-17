@@ -63,6 +63,19 @@ enum Evaluator {
         }
     }
 
+    /// `resolveValue` for a caller that does not know the flag's type —
+    /// an enumeration of the config, not a typed read. Resolves against
+    /// whatever type the flag declares; nil has the same meaning (the
+    /// app's compiled-in default applies).
+    static func resolveDeclaredValue(
+        flag: JSONValue?, context: [String: JSONValue], stableID: String
+    ) -> JSONValue? {
+        guard let object = flag?.objectValue else { return nil }
+        let declared = object["value_type"]?.stringValue ?? ValueType.bool.rawValue
+        guard let type = ValueType(rawValue: declared) else { return nil }
+        return resolveValue(flag: flag, context: context, stableID: stableID, readAs: type)
+    }
+
     private static func matches(value: JSONValue, type: ValueType) -> Bool {
         switch type {
         case .bool: return value.boolValue != nil

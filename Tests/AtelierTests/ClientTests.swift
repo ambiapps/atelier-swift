@@ -292,6 +292,43 @@ final class ClientTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
+    func testResolvedValuesListsEveryFlagInTheConfig() async {
+        let rows = """
+            [
+              {"key": "on_for_all", "enabled": true,
+               "rules": [{"conditions": [], "value": true}]},
+              {"key": "paused_flag", "enabled": false,
+               "rules": [{"conditions": [], "value": true}]},
+              {"key": "model", "enabled": true, "value_type": "string",
+               "rules": [{"conditions": [], "value": "haiku"}]},
+              {"key": "nobody", "enabled": true, "rules": []}
+            ]
+            """
+        let client = makeClient(transport: StubTransport(flagsJSON: rows), cache: makeCache())
+        _ = await client.waitForLaunchRefresh(timeout: .seconds(5))
+
+        let values = client.resolvedValues()
+        XCTAssertEqual(Set(values.keys), ["on_for_all", "paused_flag", "model", "nobody"])
+        XCTAssertEqual(values["on_for_all"], .some(.bool(true)))
+        XCTAssertEqual(values["model"], .some(.string("haiku")))
+        XCTAssertEqual(values["paused_flag"], .some(nil), "paused overrides nobody")
+        XCTAssertEqual(values["nobody"], .some(nil), "no rule matched")
+    }
+
+    func testResolvedValuesDropsAFlagThatLeavesTheConfig() async {
+        let transport = StubTransport(flagsJSON: Self.sampleRows)
+        let clock = Clock()
+        let client = makeClient(transport: transport, cache: makeCache(), clock: clock)
+        _ = await client.waitForLaunchRefresh(timeout: .seconds(5))
+        XCTAssertNotNil(client.resolvedValues()["on_for_all"])
+
+        // Archived in Atelier: the flag is simply absent from the config.
+        transport.set(flagsJSON: "[]")
+        clock.advance(by: 3600)
+        await client.refresh()
+        XCTAssertTrue(client.resolvedValues().isEmpty)
+    }
+
     func testCorruptCacheFallsBackToCompiledDefaults() async {
         let cache = makeCache()
         try? FileManager.default.createDirectory(

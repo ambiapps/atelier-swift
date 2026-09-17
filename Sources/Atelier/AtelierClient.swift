@@ -281,6 +281,29 @@ public actor AtelierClient {
         return codeDefault
     }
 
+    // MARK: - Enumeration
+
+    /// Every flag in the current config, resolved for this user: the
+    /// value a rule serves them, or `nil` where nothing overrides them
+    /// and the app's own compiled-in default applies (no rule matched,
+    /// flag paused, or a construct this SDK cannot parse). The SDK cannot
+    /// say what that default is — it lives at the call site.
+    ///
+    /// Archived flags are not in the config, so they are not here; a flag
+    /// created in Atelier appears as soon as the config carrying it is
+    /// fetched, whether or not this build reads it.
+    ///
+    /// For analytics — tagging events with the flag state the user was
+    /// in. It is not a read: no exposure is reported and nothing is
+    /// observation-tracked. Pair it with `updates` to stay current.
+    public nonisolated func resolvedValues() -> [String: JSONValue?] {
+        let snapshot = shared.read()
+        return snapshot.flags.mapValues { flag in
+            Evaluator.resolveDeclaredValue(
+                flag: flag, context: snapshot.context, stableID: snapshot.stableID)
+        }
+    }
+
     // MARK: - First config
 
     /// Whether reads are resolving against a config — a cache young

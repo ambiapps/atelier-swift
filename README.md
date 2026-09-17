@@ -78,6 +78,15 @@ succeeds. Use it when acting on a stale experiment arm is worse than
 being in control; leave it unset when a kill switch must survive a long
 time offline.
 
+### Listing the config
+
+`client.resolvedValues()` returns every flag in the current config
+resolved for this user — the value a rule serves them, or `nil` where
+nothing overrides them and the call site's own default applies. New
+flags appear as soon as the config carrying them lands; archived flags
+are gone. It is for analytics (tag events with the flag state the user
+was in), not a read: no exposure, no observation tracking.
+
 **A flag is an override, not a source of truth.** The default you pass
 at the call site is what the code does unless a rule in the config
 claims this particular user — and it is also what you get when the flag
