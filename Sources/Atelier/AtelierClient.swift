@@ -301,20 +301,40 @@ public actor AtelierClient {
     /// experiment's control arm to every new install. Always pass a
     /// timeout you are willing to add to a launch.
     public nonisolated func waitForFirstConfig(timeout: Duration) async -> Bool {
-        let state = shared
-        func settled() -> Bool {
-            let snapshot = state.read()
-            return snapshot.hasConfig || snapshot.initialRefreshFinished
-        }
-        if settled() { return state.read().hasConfig }
+        await wait(timeout: timeout) { $0.hasConfig || $0.initialRefreshFinished }
+    }
 
-        // Subscribe before re-checking so a config landing in between
+    /// Suspends until the refresh fired by `init` has finished — with a
+    /// fresh config or without one — or `timeout` elapses. Returns
+    /// `hasLoadedConfig`.
+    ///
+    /// Unlike `waitForFirstConfig`, a usable cache does **not** cut this
+    /// short: it is for a host that wants every cold start to act on the
+    /// config as it is now rather than as it was last session, and takes
+    /// the cache (within `maximumCacheAge`) or the compiled-in defaults
+    /// only when the fetch does not make it in time. An offline launch
+    /// fails its fetch at once and does not sit out the timeout.
+    ///
+    /// Opt-in and caller-bounded, like `waitForFirstConfig`. This one
+    /// puts a network round trip in front of *every* launch, so pass a
+    /// timeout you would accept as added launch time.
+    public nonisolated func waitForLaunchRefresh(timeout: Duration) async -> Bool {
+        await wait(timeout: timeout) { $0.initialRefreshFinished }
+    }
+
+    private nonisolated func wait(
+        timeout: Duration, until settled: @escaping @Sendable (Snapshot) -> Bool
+    ) async -> Bool {
+        let state = shared
+        if settled(state.read()) { return state.read().hasConfig }
+
+        // Subscribe before re-checking so a change landing in between
         // is buffered, not missed.
         let changes = updates
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
-                if settled() { return }
-                for await _ in changes where settled() { return }
+                if settled(state.read()) { return }
+                for await _ in changes where settled(state.read()) { return }
             }
             group.addTask { try? await Task.sleep(for: timeout) }
             await group.next()
