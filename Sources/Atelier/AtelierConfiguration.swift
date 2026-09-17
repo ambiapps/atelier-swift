@@ -50,6 +50,20 @@ public struct AtelierConfiguration: Sendable {
     /// document and sit on last-good until they do.
     public var signingKeys: [String]
 
+    /// How old the disk cache may be and still be served at cold boot.
+    /// `nil` — the default — means last-good is served however old it
+    /// is, which is the SDK's standing guarantee.
+    ///
+    /// Set it and a cache older than this is ignored at init: reads
+    /// resolve to the compiled-in defaults until a refresh succeeds.
+    /// That trades "last-good wins" for "never act on a config nobody
+    /// has confirmed recently" — right for an app that runs experiments
+    /// and would rather be in control than in a stale arm, wrong for a
+    /// kill switch that must survive a week offline. The age is measured
+    /// once, at init; a config loaded then keeps serving for the life of
+    /// the process.
+    public var maximumCacheAge: TimeInterval?
+
     public init(
         organization: String,
         product: String,
@@ -57,7 +71,8 @@ public struct AtelierConfiguration: Sendable {
         appGroupIdentifier: String? = nil,
         onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)? = nil,
         minimumRefreshInterval: TimeInterval = 60,
-        signingKeys: [String] = []
+        signingKeys: [String] = [],
+        maximumCacheAge: TimeInterval? = nil
     ) {
         self.organization = organization
         self.product = product
@@ -66,6 +81,7 @@ public struct AtelierConfiguration: Sendable {
         self.onExposure = onExposure
         self.minimumRefreshInterval = minimumRefreshInterval
         self.signingKeys = signingKeys
+        self.maximumCacheAge = maximumCacheAge
     }
 }
 

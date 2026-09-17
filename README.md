@@ -44,6 +44,34 @@ to the compiled-in default. The default should equal current shipped
 behavior, so "Atelier unreachable" is indistinguishable from "nothing
 changed".
 
+### Waiting for the first config (opt-in)
+
+A first launch has no cache, so every read resolves to its default until
+the first fetch lands — which puts every new install in an experiment's
+control arm on its first screen. A host that would rather show a brief
+loading state can wait, with a bound it chooses:
+
+```swift
+let resolved = await client.waitForFirstConfig(timeout: .seconds(3))
+```
+
+It returns as soon as a config is being served, as soon as the launch
+refresh has failed (an offline launch does not sit out the timeout), or
+at the timeout. With a usable cache it returns immediately, so only
+first launches ever wait. `client.hasLoadedConfig` is the same answer
+synchronously — tag exposures with it to tell "resolved against a
+config" from "fell back because there was nothing to resolve against".
+
+Nothing in the SDK calls this and reads never wait; the guarantee below
+is about the SDK, and this is the host deciding otherwise for one screen.
+
+`AtelierConfiguration.maximumCacheAge` (default `nil`: last-good is
+served however old) makes a cache older than the given age unusable at
+cold boot, so reads fall back to compiled-in defaults until a refresh
+succeeds. Use it when acting on a stale experiment arm is worse than
+being in control; leave it unset when a kill switch must survive a long
+time offline.
+
 **A flag is an override, not a source of truth.** The default you pass
 at the call site is what the code does unless a rule in the config
 claims this particular user — and it is also what you get when the flag

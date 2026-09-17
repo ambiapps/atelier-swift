@@ -132,10 +132,13 @@ final class ClientTests: XCTestCase {
         transport: StubTransport,
         cache: DiskCache,
         clock: Clock = Clock(),
-        defaults: UserDefaults? = nil
+        defaults: UserDefaults? = nil,
+        maximumCacheAge: TimeInterval? = nil
     ) -> AtelierClient {
-        AtelierClient(
-            configuration: makeConfiguration(),
+        var configuration = makeConfiguration()
+        configuration.maximumCacheAge = maximumCacheAge
+        return AtelierClient(
+            configuration: configuration,
             transport: transport,
             cacheOverride: cache,
             now: { clock.now },
@@ -185,6 +188,83 @@ final class ClientTests: XCTestCase {
         XCTAssertTrue(client.isEnabled("cached_flag", default: false))
         XCTAssertFalse(client.isEnabled("unknown_flag", default: false))
         XCTAssertTrue(client.isEnabled("unknown_flag", default: true))
+    }
+
+    // MARK: - First config / cache age
+
+    private func storeCachedFlag(in cache: DiskCache, storedAt date: Date) {
+        cache.store(
+            ConfigDocument(
+                schemaVersion: ConfigDocument.supportedSchemaVersion, app: "ambre",
+                flags: [
+                    .object([
+                        "key": .string("cached_flag"), "enabled": .bool(true),
+                        "rules": .array([
+                            .object(["conditions": .array([]), "value": .bool(true)])
+                        ]),
+                    ])
+                ]))
+        try? FileManager.default.setAttributes(
+            [.modificationDate: date], ofItemAtPath: cache.fileURL.path)
+    }
+
+    func testCacheWithinMaximumAgeIsServed() async {
+        let cache = makeCache()
+        let clock = Clock()
+        storeCachedFlag(in: cache, storedAt: clock.now.addingTimeInterval(-5 * 3600))
+        let client = makeClient(
+            transport: StubTransport(error: StubError()), cache: cache, clock: clock,
+            maximumCacheAge: 6 * 3600)
+        XCTAssertTrue(client.hasLoadedConfig)
+        XCTAssertTrue(client.isEnabled("cached_flag", default: false))
+    }
+
+    func testCacheOlderThanMaximumAgeFallsBackToCompiledDefaults() async {
+        let cache = makeCache()
+        let clock = Clock()
+        storeCachedFlag(in: cache, storedAt: clock.now.addingTimeInterval(-7 * 3600))
+        let client = makeClient(
+            transport: StubTransport(error: StubError()), cache: cache, clock: clock,
+            maximumCacheAge: 6 * 3600)
+        XCTAssertFalse(client.hasLoadedConfig)
+        XCTAssertFalse(client.isEnabled("cached_flag", default: false))
+    }
+
+    func testOldCacheIsServedWhenNoMaximumAgeIsSet() async {
+        let cache = makeCache()
+        let clock = Clock()
+        storeCachedFlag(in: cache, storedAt: clock.now.addingTimeInterval(-30 * 86400))
+        let client = makeClient(
+            transport: StubTransport(error: StubError()), cache: cache, clock: clock)
+        XCTAssertTrue(client.isEnabled("cached_flag", default: false))
+    }
+
+    func testWaitForFirstConfigReturnsOnceTheFetchLands() async {
+        let client = makeClient(
+            transport: StubTransport(flagsJSON: Self.sampleRows), cache: makeCache())
+        let loaded = await client.waitForFirstConfig(timeout: .seconds(5))
+        XCTAssertTrue(loaded)
+        XCTAssertTrue(client.isEnabled("on_for_all", default: false))
+    }
+
+    func testWaitForFirstConfigReturnsImmediatelyWithAUsableCache() async {
+        let cache = makeCache()
+        storeCachedFlag(in: cache, storedAt: Date())
+        let client = makeClient(transport: StubTransport(error: StubError()), cache: cache)
+        let started = Date()
+        let loaded = await client.waitForFirstConfig(timeout: .seconds(5))
+        XCTAssertTrue(loaded)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
+
+    func testWaitForFirstConfigGivesUpEarlyWhenTheLaunchRefreshFails() async {
+        let client = makeClient(transport: StubTransport(error: StubError()), cache: makeCache())
+        let started = Date()
+        let loaded = await client.waitForFirstConfig(timeout: .seconds(5))
+        XCTAssertFalse(loaded)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 2,
+            "an offline launch must not sit out the whole timeout")
     }
 
     func testCorruptCacheFallsBackToCompiledDefaults() async {

@@ -21,6 +21,10 @@ Violating any of these is a review-blocking bug:
 1. **Clients never block launch on flags.** Disk-cache-first, network
    in background, last-good on any failure, compiled-in defaults
    underneath. No API on the hot path may await network.
+   `waitForFirstConfig(timeout:)` is the one deliberate exception: an
+   opt-in, caller-bounded wait that nothing in the SDK calls and no
+   read depends on. `maximumCacheAge` likewise narrows "last-good" only
+   for hosts that set it; both default to the behavior above.
 2. **Evaluation is deterministic and portable.** SHA-256 bucketing
    exactly as specified — never `Swift.Hasher`/`hashValue` or any
    process-seeded hash.
