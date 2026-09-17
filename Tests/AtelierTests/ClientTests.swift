@@ -292,24 +292,6 @@ final class ClientTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
-    func testConfigDownloadsAreTimedAndReported() async {
-        let downloads = ValuesBox<ConfigDownload>()
-        var configuration = makeConfiguration()
-        configuration.onConfigDownload = { downloads.append($0) }
-        let clock = Clock()
-        let client = AtelierClient(
-            configuration: configuration,
-            transport: StubTransport(flagsJSON: Self.sampleRows),
-            cacheOverride: makeCache(), now: { clock.now }, defaults: makeDefaults())
-        _ = await client.waitForLaunchRefresh(timeout: .seconds(5))
-        clock.advance(by: 3600)
-        await client.refresh()
-
-        XCTAssertEqual(downloads.values.map(\.isLaunch), [true, false])
-        XCTAssertTrue(downloads.values.allSatisfy(\.succeeded))
-        XCTAssertTrue(downloads.values.allSatisfy { $0.bytes > 0 })
-    }
-
     func testCorruptCacheFallsBackToCompiledDefaults() async {
         let cache = makeCache()
         try? FileManager.default.createDirectory(

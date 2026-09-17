@@ -101,8 +101,6 @@ public actor AtelierClient {
     /// Counts applied documents, so the launch refresh can tell whether
     /// it produced one.
     private var appliedDocuments = 0
-    /// The first config download of the process is the launch one.
-    private var reportedLaunchDownload = false
 
     /// Last-known service endpoint (ADR 0008). Seeded from disk at init;
     /// re-resolved from the directory document on every refresh cycle.
@@ -490,32 +488,6 @@ public actor AtelierClient {
         return appliedDocuments > before
     }
 
-    /// A config download, timed. Only the network request is measured —
-    /// not the directory lookup before it nor the decode and signature
-    /// check after — and the host hears about it whether or not it
-    /// succeeded, so a slow or failing CDN shows up as a number.
-    private func configData(for request: URLRequest) async throws -> (Data, URLResponse) {
-        let clock = ContinuousClock()
-        let started = clock.now
-        let isLaunch = !reportedLaunchDownload
-        reportedLaunchDownload = true
-        do {
-            let result = try await transport.data(for: request)
-            let status = (result.1 as? HTTPURLResponse)?.statusCode
-            configuration.onConfigDownload?(
-                ConfigDownload(
-                    duration: clock.now - started, statusCode: status,
-                    bytes: result.0.count, isLaunch: isLaunch))
-            return result
-        } catch {
-            configuration.onConfigDownload?(
-                ConfigDownload(
-                    duration: clock.now - started, statusCode: nil, bytes: 0,
-                    isLaunch: isLaunch))
-            throw error
-        }
-    }
-
     private func apply(_ document: ConfigDocument) {
         appliedDocuments += 1
         cache.store(document)
@@ -543,7 +515,7 @@ public actor AtelierClient {
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
         do {
-            let (data, response) = try await configData(for: request)
+            let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse,
                 (200..<300).contains(http.statusCode)
             else { return .unavailable }
@@ -574,7 +546,7 @@ public actor AtelierClient {
 
         let token: Data
         do {
-            let (data, response) = try await configData(for: request)
+            let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse,
                 (200..<300).contains(http.statusCode)
             else { return .unavailable }
@@ -614,7 +586,7 @@ public actor AtelierClient {
         request.setValue("Bearer \(endpoint.apiKey)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (data, response) = try await configData(for: request)
+            let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
             else { return }
             // Strict decode; any error keeps the previous cache.
