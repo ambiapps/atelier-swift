@@ -27,6 +27,10 @@ public struct AtelierConfiguration: Sendable {
     /// their own analytics; the SDK has no analytics dependency.
     public var onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)?
 
+    /// Called after every config download with how long the network
+    /// request took — for the host's own analytics, like `onExposure`.
+    public var onConfigDownload: (@Sendable (_ download: ConfigDownload) -> Void)?
+
     /// Minimum interval between network refreshes; `refresh()` calls
     /// inside the window are dropped (docs/sdk-swift.md).
     public var minimumRefreshInterval: TimeInterval
@@ -72,7 +76,8 @@ public struct AtelierConfiguration: Sendable {
         onExposure: (@Sendable (_ key: String, _ value: JSONValue) -> Void)? = nil,
         minimumRefreshInterval: TimeInterval = 60,
         signingKeys: [String] = [],
-        maximumCacheAge: TimeInterval? = nil
+        maximumCacheAge: TimeInterval? = nil,
+        onConfigDownload: (@Sendable (_ download: ConfigDownload) -> Void)? = nil
     ) {
         self.organization = organization
         self.product = product
@@ -82,7 +87,24 @@ public struct AtelierConfiguration: Sendable {
         self.minimumRefreshInterval = minimumRefreshInterval
         self.signingKeys = signingKeys
         self.maximumCacheAge = maximumCacheAge
+        self.onConfigDownload = onConfigDownload
     }
+}
+
+/// One config download, as timed by the SDK: the network request for
+/// the config object alone — not service discovery, decoding or
+/// signature verification.
+public struct ConfigDownload: Sendable {
+    public let duration: Duration
+    /// HTTP status, or `nil` when the request failed before a response
+    /// (offline, timeout, TLS).
+    public let statusCode: Int?
+    public let bytes: Int
+    /// The first download of the process — the one a cold start waits
+    /// on in `waitForLaunchRefresh`.
+    public let isLaunch: Bool
+
+    public var succeeded: Bool { statusCode.map { (200..<300).contains($0) } ?? false }
 }
 
 /// Which APNs environment the current build's device tokens belong to

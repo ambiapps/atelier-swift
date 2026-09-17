@@ -68,6 +68,11 @@ now, and falls back to the cache (within `maximumCacheAge`) or the
 defaults only when the fetch misses the timeout. It costs a round trip
 on every launch.
 
+`AtelierConfiguration.onConfigDownload` reports every config download —
+the network request alone, not discovery, decoding or verification —
+with its duration, HTTP status, size and whether it was the launch one,
+so the cost of waiting on it is a number in your own analytics.
+
 Nothing in the SDK calls these and reads never wait; the guarantee below
 is about the SDK, and this is the host deciding otherwise for one screen.
 
