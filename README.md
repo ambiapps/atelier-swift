@@ -62,7 +62,13 @@ first launches ever wait. `client.hasLoadedConfig` is the same answer
 synchronously — tag exposures with it to tell "resolved against a
 config" from "fell back because there was nothing to resolve against".
 
-Nothing in the SDK calls this and reads never wait; the guarantee below
+`waitForLaunchRefresh(timeout:)` is the stricter sibling: a usable cache
+does not cut it short, so every cold start acts on the config as it is
+now, and falls back to the cache (within `maximumCacheAge`) or the
+defaults only when the fetch misses the timeout. It costs a round trip
+on every launch.
+
+Nothing in the SDK calls these and reads never wait; the guarantee below
 is about the SDK, and this is the host deciding otherwise for one screen.
 
 `AtelierConfiguration.maximumCacheAge` (default `nil`: last-good is

@@ -267,6 +267,31 @@ final class ClientTests: XCTestCase {
             "an offline launch must not sit out the whole timeout")
     }
 
+    func testWaitForLaunchRefreshWaitsForTheFetchDespiteAUsableCache() async {
+        let cache = makeCache()
+        storeCachedFlag(in: cache, storedAt: Date())
+        let client = makeClient(
+            transport: StubTransport(flagsJSON: Self.sampleRows), cache: cache)
+        let outcome = await client.waitForLaunchRefresh(timeout: .seconds(5))
+        XCTAssertEqual(outcome, .refreshed)
+        XCTAssertTrue(
+            client.isEnabled("on_for_all", default: false),
+            "the fetched config, not the cached one, is what the launch acts on")
+        XCTAssertFalse(client.isEnabled("cached_flag", default: false))
+    }
+
+    func testWaitForLaunchRefreshFallsBackToTheCacheWhenTheFetchFails() async {
+        let cache = makeCache()
+        storeCachedFlag(in: cache, storedAt: Date())
+        let client = makeClient(transport: StubTransport(error: StubError()), cache: cache)
+        let started = Date()
+        let outcome = await client.waitForLaunchRefresh(timeout: .seconds(5))
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertTrue(client.hasLoadedConfig)
+        XCTAssertTrue(client.isEnabled("cached_flag", default: false))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
     func testCorruptCacheFallsBackToCompiledDefaults() async {
         let cache = makeCache()
         try? FileManager.default.createDirectory(

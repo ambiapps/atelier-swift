@@ -35,6 +35,9 @@ public actor AtelierClient {
         /// moment an offline launch has failed rather than at its
         /// timeout.
         var initialRefreshFinished = false
+        /// …and it applied a document — as opposed to finishing
+        /// offline, unreachable or rejected.
+        var initialRefreshSucceeded = false
     }
 
     private final class SharedState: @unchecked Sendable {
@@ -95,6 +98,9 @@ public actor AtelierClient {
     /// current, so an older genuinely-signed document must be refused.
     private var currentRevision: Int?
     private var refreshTask: Task<Void, Never>?
+    /// Counts applied documents, so the launch refresh can tell whether
+    /// it produced one.
+    private var appliedDocuments = 0
 
     /// Last-known service endpoint (ADR 0008). Seeded from disk at init;
     /// re-resolved from the directory document on every refresh cycle.
@@ -167,8 +173,12 @@ public actor AtelierClient {
 
         // Background refresh — fire-and-forget, never awaited by init.
         Task { [weak self] in
-            await self?.refresh()
-            self?.shared.write { $0.initialRefreshFinished = true }
+            guard let self else { return }
+            let applied = await self.refreshReportingSuccess()
+            self.shared.write {
+                $0.initialRefreshFinished = true
+                $0.initialRefreshSucceeded = applied
+            }
         }
         Task { [weak self] in await self?.observeForegroundAndPoll() }
     }
@@ -301,20 +311,57 @@ public actor AtelierClient {
     /// experiment's control arm to every new install. Always pass a
     /// timeout you are willing to add to a launch.
     public nonisolated func waitForFirstConfig(timeout: Duration) async -> Bool {
-        let state = shared
-        func settled() -> Bool {
-            let snapshot = state.read()
-            return snapshot.hasConfig || snapshot.initialRefreshFinished
-        }
-        if settled() { return state.read().hasConfig }
+        await wait(timeout: timeout) { $0.hasConfig || $0.initialRefreshFinished }
+    }
 
-        // Subscribe before re-checking so a config landing in between
+    /// How a `waitForLaunchRefresh` ended.
+    public enum LaunchRefreshOutcome: String, Sendable {
+        /// The launch fetch landed: reads resolve against a fresh config.
+        case refreshed
+        /// The launch fetch finished without a usable document (offline,
+        /// unreachable, rejected): cache or compiled-in defaults.
+        case failed
+        /// The timeout elapsed first; the fetch carries on in the
+        /// background. Cache or compiled-in defaults until it lands.
+        case timedOut = "timed_out"
+    }
+
+    /// Suspends until the refresh fired by `init` has finished — with a
+    /// fresh config or without one — or `timeout` elapses, and says
+    /// which. Check `hasLoadedConfig` afterwards for whether a config
+    /// (fresh or cached) is being served at all.
+    ///
+    /// Unlike `waitForFirstConfig`, a usable cache does **not** cut this
+    /// short: it is for a host that wants every cold start to act on the
+    /// config as it is now rather than as it was last session, and takes
+    /// the cache (within `maximumCacheAge`) or the compiled-in defaults
+    /// only when the fetch does not make it in time. An offline launch
+    /// fails its fetch at once and does not sit out the timeout.
+    ///
+    /// Opt-in and caller-bounded, like `waitForFirstConfig`. This one
+    /// puts a network round trip in front of *every* launch, so pass a
+    /// timeout you would accept as added launch time — and time it: the
+    /// host owns the clock and the analytics.
+    public nonisolated func waitForLaunchRefresh(timeout: Duration) async -> LaunchRefreshOutcome {
+        _ = await wait(timeout: timeout) { $0.initialRefreshFinished }
+        let snapshot = shared.read()
+        guard snapshot.initialRefreshFinished else { return .timedOut }
+        return snapshot.initialRefreshSucceeded ? .refreshed : .failed
+    }
+
+    private nonisolated func wait(
+        timeout: Duration, until settled: @escaping @Sendable (Snapshot) -> Bool
+    ) async -> Bool {
+        let state = shared
+        if settled(state.read()) { return state.read().hasConfig }
+
+        // Subscribe before re-checking so a change landing in between
         // is buffered, not missed.
         let changes = updates
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
-                if settled() { return }
-                for await _ in changes where settled() { return }
+                if settled(state.read()) { return }
+                for await _ in changes where settled(state.read()) { return }
             }
             group.addTask { try? await Task.sleep(for: timeout) }
             await group.next()
@@ -434,7 +481,15 @@ public actor AtelierClient {
         await uploadRegistrationIfPending()
     }
 
+    /// The launch refresh, reporting whether it applied a document.
+    private func refreshReportingSuccess() async -> Bool {
+        let before = appliedDocuments
+        await refresh()
+        return appliedDocuments > before
+    }
+
     private func apply(_ document: ConfigDocument) {
+        appliedDocuments += 1
         cache.store(document)
         currentRevision = document.revision ?? currentRevision
         shared.write { snapshot in
