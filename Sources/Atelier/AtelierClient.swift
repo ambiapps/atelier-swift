@@ -87,6 +87,12 @@ public actor AtelierClient {
     private let observation: ObservationSupport
     private let now: @Sendable () -> Date
     private var lastRefresh: Date?
+    /// The refresh cycle currently running, if any. `refresh()` joins it
+    /// rather than skipping it: a caller must never return before the
+    /// config it asked for has been fetched — the launch refresh from
+    /// `init` and an explicit `refresh()` otherwise race, and whichever
+    /// loses the debounce returns with nothing applied.
+    private var inFlightRefresh: Task<Void, Never>?
 
     /// Verification keys from `AtelierConfiguration.signingKeys` (ADR
     /// 0017). Empty means this build does not verify and reads the
@@ -452,13 +458,26 @@ public actor AtelierClient {
     /// interval are dropped; a failed or malformed fetch changes nothing
     /// (last-good wins).
     public func refresh() async {
+        if let inFlight = inFlightRefresh {
+            await inFlight.value
+            return
+        }
         if let last = lastRefresh,
             now().timeIntervalSince(last) < configuration.minimumRefreshInterval
         {
             return
         }
         lastRefresh = now()
-        await performRefresh()
+        await runRefresh(revalidating: false)
+    }
+
+    /// Runs one refresh cycle as the in-flight task, so concurrent
+    /// callers can await it instead of starting their own.
+    private func runRefresh(revalidating: Bool) async {
+        let task = Task { await self.performRefresh(revalidating: revalidating) }
+        inFlightRefresh = task
+        await task.value
+        if inFlightRefresh == task { inFlightRefresh = nil }
     }
 
     /// - Parameter revalidating: skip any locally cached HTTP response
@@ -670,8 +689,11 @@ public actor AtelierClient {
     /// push exists to say something changed right now, so serving a
     /// cached config response would answer the wrong question.
     private func pokeRefresh() async {
+        // Let a running cycle finish first: it may have been served from
+        // the HTTP cache, which is exactly what the poke exists to bypass.
+        if let inFlight = inFlightRefresh { await inFlight.value }
         lastRefresh = now()
-        await performRefresh(revalidating: true)
+        await runRefresh(revalidating: true)
     }
 
     private func uploadRegistrationIfPending() async {
