@@ -31,7 +31,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild test \
-            -scheme Atelier \
+            -scheme Atelier-Package \
             -destination '${{ matrix.destination }}' \
             -skipPackagePluginValidation \
             | xcbeautify --renderer github-actions
