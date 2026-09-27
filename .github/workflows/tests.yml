@@ -7,8 +7,31 @@ on:
 
 jobs:
   test:
-    name: swift test
+    name: ${{ matrix.platform }}
+    # GitHub-hosted: minutes are free for public repos, and the org's
+    # self-hosted runner group is (deliberately) closed to public repos.
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            destination: platform=macOS
+          - platform: iOS
+            destination: platform=iOS Simulator,name=iPhone 16
+          - platform: watchOS
+            destination: platform=watchOS Simulator,name=Apple Watch Series 10 (46mm)
+          - platform: tvOS
+            destination: platform=tvOS Simulator,name=Apple TV
+          - platform: visionOS
+            destination: platform=visionOS Simulator,name=Apple Vision Pro
     steps:
       - uses: actions/checkout@v4
-      - run: swift test
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme Atelier \
+            -destination '${{ matrix.destination }}' \
+            -skipPackagePluginValidation \
+            | xcbeautify --renderer github-actions
