@@ -14,24 +14,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macOS
-            destination: platform=macOS
-          - platform: iOS
-            destination: platform=iOS Simulator,name=iPhone 16
-          - platform: watchOS
-            destination: platform=watchOS Simulator,name=Apple Watch Series 10 (46mm)
-          - platform: tvOS
-            destination: platform=tvOS Simulator,name=Apple TV
-          - platform: visionOS
-            destination: platform=visionOS Simulator,name=Apple Vision Pro
+        platform: [macOS, iOS, watchOS, tvOS, visionOS]
     steps:
       - uses: actions/checkout@v4
+      - name: Pick a destination
+        id: dest
+        run: |
+          if [ "${{ matrix.platform }}" = macOS ]; then
+            echo "destination=platform=macOS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # First available simulator on the newest ${{ matrix.platform }}
+          # runtime. Picking by id sidesteps device names that are ambiguous
+          # (visionOS lists "Designed for iPad" variants under the same name)
+          # or that drift between runner images.
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            .devices
+            | to_entries
+            | map(select(.key | test("${{ matrix.platform }}-")))
+            | sort_by(.key) | last
+            | .value[0].udid')
+          [ -n "$udid" ] && [ "$udid" != null ] || { echo "no ${{ matrix.platform }} simulator"; exit 1; }
+          echo "destination=platform=${{ matrix.platform }} Simulator,id=$udid" >> "$GITHUB_OUTPUT"
       - name: Test
         run: |
           set -o pipefail
           xcodebuild test \
             -scheme Atelier-Package \
-            -destination '${{ matrix.destination }}' \
+            -destination '${{ steps.dest.outputs.destination }}' \
             -skipPackagePluginValidation \
             | xcbeautify --renderer github-actions
