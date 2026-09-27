@@ -7,8 +7,42 @@ on:
 
 jobs:
   test:
-    name: swift test
+    name: ${{ matrix.platform }}
+    # GitHub-hosted: minutes are free for public repos, and the org's
+    # self-hosted runner group is (deliberately) closed to public repos.
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macOS, iOS, watchOS, tvOS, visionOS]
     steps:
       - uses: actions/checkout@v4
-      - run: swift test
+      - name: Pick a destination
+        id: dest
+        run: |
+          if [ "${{ matrix.platform }}" = macOS ]; then
+            echo "destination=platform=macOS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # First available simulator on the newest ${{ matrix.platform }}
+          # runtime. Picking by id sidesteps device names that are ambiguous
+          # (visionOS lists "Designed for iPad" variants under the same name)
+          # or that drift between runner images. simctl still calls the
+          # visionOS runtime xrOS.
+          runtime=${{ matrix.platform }}; [ "$runtime" = visionOS ] && runtime=xrOS
+          udid=$(xcrun simctl list devices available -j | jq -r --arg rt "$runtime-" '
+            .devices
+            | to_entries
+            | map(select(.key | contains($rt)))
+            | sort_by(.key) | last
+            | .value[0].udid')
+          [ -n "$udid" ] && [ "$udid" != null ] || { echo "no ${{ matrix.platform }} simulator"; exit 1; }
+          echo "destination=platform=${{ matrix.platform }} Simulator,id=$udid" >> "$GITHUB_OUTPUT"
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme Atelier-Package \
+            -destination '${{ steps.dest.outputs.destination }}' \
+            -skipPackagePluginValidation \
+            | xcbeautify --renderer github-actions
