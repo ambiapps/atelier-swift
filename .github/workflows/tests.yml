@@ -27,11 +27,13 @@ jobs:
           # First available simulator on the newest ${{ matrix.platform }}
           # runtime. Picking by id sidesteps device names that are ambiguous
           # (visionOS lists "Designed for iPad" variants under the same name)
-          # or that drift between runner images.
-          udid=$(xcrun simctl list devices available -j | jq -r '
+          # or that drift between runner images. simctl still calls the
+          # visionOS runtime xrOS.
+          runtime=${{ matrix.platform }}; [ "$runtime" = visionOS ] && runtime=xrOS
+          udid=$(xcrun simctl list devices available -j | jq -r --arg rt "$runtime-" '
             .devices
             | to_entries
-            | map(select(.key | test("${{ matrix.platform }}-")))
+            | map(select(.key | contains($rt)))
             | sort_by(.key) | last
             | .value[0].udid')
           [ -n "$udid" ] && [ "$udid" != null ] || { echo "no ${{ matrix.platform }} simulator"; exit 1; }
