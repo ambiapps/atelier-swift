@@ -8,7 +8,7 @@ on:
 jobs:
   test:
     name: swift test
-    runs-on: macos-15
+    runs-on: [self-hosted, ARM64]
     steps:
       - uses: actions/checkout@v4
       - run: swift test
